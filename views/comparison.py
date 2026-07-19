@@ -29,20 +29,24 @@ run = st.button("비교하기", type="primary")
 # DCF 비교 섹션에 슬라이더/버튼이 추가되면서, 그 위젯을 조작하는 것만으로도 스크립트
 # 전체가 재실행된다. "비교하기"를 다시 누르지 않은 재실행에서도 이미 확정된 비교 대상을
 # 그대로 유지하기 위해(Stock Research의 confirmed_ticker와 동일한 패턴), 세션에 기억해둔다.
-if "has_run" not in st.session_state:
-    st.session_state.has_run = False
-if "confirmed_tickers_input" not in st.session_state:
-    st.session_state.confirmed_tickers_input = None
+# ⚠️ st.session_state는 페이지 전용이 아니라 앱 전체(세션) 공용이라, Stock Research가 쓰는
+# "has_run"과 이름이 겹치면 안 된다 — Stock Research에서 조회하기를 먼저 눌러 has_run=True가
+# 남은 채로 Comparison에 들어오면, 이 페이지의 confirmed_tickers_input은 여전히 None인데
+# 아래 정지 게이트가 (겹친 has_run=True 때문에) 뚫려버려 곧장 크래시했던 회귀였다.
+if "cmp_has_run" not in st.session_state:
+    st.session_state.cmp_has_run = False
+if "cmp_confirmed_tickers_input" not in st.session_state:
+    st.session_state.cmp_confirmed_tickers_input = None
 
 if run:
-    st.session_state.has_run = True
-    st.session_state.confirmed_tickers_input = tickers_input
+    st.session_state.cmp_has_run = True
+    st.session_state.cmp_confirmed_tickers_input = tickers_input
 
-if not st.session_state.has_run:
+if not st.session_state.cmp_has_run or not st.session_state.cmp_confirmed_tickers_input:
     st.info("티커를 입력하고 '비교하기'를 눌러주세요.")
     st.stop()
 
-raw_tickers = [t.strip().upper() for t in st.session_state.confirmed_tickers_input.split(",") if t.strip()]
+raw_tickers = [t.strip().upper() for t in st.session_state.cmp_confirmed_tickers_input.split(",") if t.strip()]
 unique_tickers = list(dict.fromkeys(raw_tickers))[:MAX_TICKERS]
 
 if not unique_tickers:
