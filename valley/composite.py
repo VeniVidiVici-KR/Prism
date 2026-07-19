@@ -1,0 +1,117 @@
+"""여러 매크로 지표를 조합한 파생 지표 (인플레이션율, 실질금리, M2/GDP, 금리차).
+
+원본 지표(valley.macro)는 각자 다른 주기(월별/분기별)로 발표되므로, 조합하기 전에
+주기를 맞추는 과정이 필요하다. 함수별 정렬 방식은 각 docstring에 적어둔다.
+"""
+
+import os
+
+import pandas as pd
+
+from valley.macro import MacroDataError, get_indicator_series
+
+# 명목 GDP는 INDICATORS 카탈로그의 {country}_GDP_NOMINAL로 조회한다.
+# 미국(fred_id "GDP")은 이미 연율화(SAAR)된 값이라 그대로 쓰고, 한국(fred_id "NGDPSAXDCKRQ")은
+# 분기 원계열이라 rolling(4).sum()으로 직접 연율화한다.
+
+# 한국 GDP(NGDPSAXDCKRQ)는 백만원 단위, M2(ECOS)는 십억원 단위로 서로 달라
+# (각 시리즈의 절대 수준을 비교해 역산 확인함 — 보정 없이는 비율이 약 1000배 작게 나옴) 1000으로
+# 나눠 십억원 기준으로 맞춘다. 미국은 GDP·M2SL 모두 십억달러 단위라 보정이 필요 없다.
+_KR_GDP_UNIT_SCALE = 1000
+
+COMPOSITE_INDICATORS = {
+    "US": [
+        {"key": "US_CPI_YOY", "label": "CPI 상승률 (전년동월대비 %)"},
+        {"key": "US_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
+        {"key": "US_M2_GDP", "label": "M2 / 명목GDP"},
+    ],
+    "KR": [
+        {"key": "KR_CPI_YOY", "label": "CPI 상승률 (전년동월대비 %)"},
+        {"key": "KR_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
+        {"key": "KR_M2_GDP", "label": "M2 / 명목GDP"},
+    ],
+}
+
+# 국가 구분이 없는(두 나라를 함께 봐야 하는) 지표.
+CROSS_COUNTRY_INDICATORS = [
+    {"key": "US_KR_RATE_SPREAD", "label": "한미 정책금리차 (미국 - 한국)"},
+]
+
+
+def _cpi_yoy(country: str) -> pd.Series:
+    """CPI 지수를 전년동월대비 상승률(%)로 변환한다 (월별 데이터 기준 12개월 전 대비)."""
+    cpi = get_indicator_series(f"{country}_CPI")
+    yoy = (cpi.pct_change(12) * 100).dropna()
+    if yoy.empty:
+        raise MacroDataError(f"{country} CPI 상승률을 계산할 만큼 데이터가 충분하지 않습니다.")
+    return yoy
+
+
+def _real_rate(country: str) -> pd.Series:
+    """실질금리 = 정책금리 - CPI 전년동월대비 상승률. 두 월별 시계열을 겹치는 구간만 뺀다."""
+    rate_key = "US_FEDFUNDS" if country == "US" else "KR_BASE_RATE"
+    rate = get_indicator_series(rate_key)
+    cpi_yoy = _cpi_yoy(country)
+    df = pd.concat([rate.rename("rate"), cpi_yoy.rename("cpi_yoy")], axis=1, join="inner")
+    if df.empty:
+        raise MacroDataError(f"{country} 실질금리를 계산할 만큼 겹치는 데이터가 없습니다.")
+    return (df["rate"] - df["cpi_yoy"]).dropna()
+
+
+def _m2_to_gdp(country: str) -> pd.Series:
+    """M2(월별 스톡) / 명목GDP(분기별, 연율화)를 분기 기준 비율로 반환한다.
+
+    M2는 분기 마지막 달 값으로 리샘플하고, GDP는 미국은 이미 연율화된 값을 그대로,
+    한국은 직전 4개 분기 합으로 연율화해 두 나라 모두 '연간 GDP 대비 M2 스톡' 기준으로 맞춘다.
+
+    한국은 ECOS_API_KEY가 반드시 필요하다: _KR_GDP_UNIT_SCALE은 ECOS(161Y005, 십억원 단위)
+    기준으로 역산한 상수라, ECOS 호출이 실패해 FRED(MYAGM2KRM189N, 원 단위 그대로 + 2017년
+    이후 갱신 중단)로 폴백되면 단위도 안 맞고 데이터도 9년 가까이 낡아 조용히 틀린 비율이
+    나온다. get_ecos_series처럼 예외를 던지는 대신 폴백하는 CPI 계열과 달리, 이 지표는
+    절대 수준을 직접 쓰기 때문에 폴백을 허용할 수 없다.
+    """
+    if country == "KR" and not os.environ.get("ECOS_API_KEY"):
+        raise MacroDataError(
+            "한국 M2/GDP는 ECOS_API_KEY가 있어야 정확합니다 (FRED 폴백은 단위가 달라 "
+            "부정확한 값이 나옵니다). .env에 ECOS_API_KEY를 설정해주세요."
+        )
+
+    m2_key = "US_M2SL" if country == "US" else "KR_M2"
+    m2 = get_indicator_series(m2_key).resample("QS").last()
+
+    gdp = get_indicator_series(f"{country}_GDP_NOMINAL")
+    if country == "KR":
+        gdp = gdp.rolling(4).sum() / _KR_GDP_UNIT_SCALE
+
+    df = pd.concat([m2.rename("m2"), gdp.rename("gdp")], axis=1, join="inner").dropna()
+    if df.empty:
+        raise MacroDataError(f"{country} M2/GDP를 계산할 만큼 겹치는 데이터가 없습니다.")
+    return df["m2"] / df["gdp"]
+
+
+def _rate_spread() -> pd.Series:
+    """한미 정책금리차 = 미국 연방기금금리 - 한국 기준금리 (월별, 겹치는 구간만)."""
+    us_rate = get_indicator_series("US_FEDFUNDS")
+    kr_rate = get_indicator_series("KR_BASE_RATE")
+    df = pd.concat([us_rate.rename("us"), kr_rate.rename("kr")], axis=1, join="inner")
+    if df.empty:
+        raise MacroDataError("한미 정책금리차를 계산할 만큼 겹치는 데이터가 없습니다.")
+    return (df["us"] - df["kr"]).dropna()
+
+
+_COMPUTE = {
+    "US_CPI_YOY": lambda: _cpi_yoy("US"),
+    "KR_CPI_YOY": lambda: _cpi_yoy("KR"),
+    "US_REAL_RATE": lambda: _real_rate("US"),
+    "KR_REAL_RATE": lambda: _real_rate("KR"),
+    "US_M2_GDP": lambda: _m2_to_gdp("US"),
+    "KR_M2_GDP": lambda: _m2_to_gdp("KR"),
+    "US_KR_RATE_SPREAD": _rate_spread,
+}
+
+
+def get_composite_series(key: str) -> pd.Series:
+    """카탈로그의 key로 혼합 지표 시계열을 조회하는 단일 진입점."""
+    if key not in _COMPUTE:
+        raise MacroDataError(f"'{key}'는 등록되지 않은 혼합 지표입니다.")
+    return _COMPUTE[key]()
