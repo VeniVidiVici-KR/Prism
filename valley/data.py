@@ -27,7 +27,7 @@ def resolve_ticker(user_input: str) -> str:
         for suffix in (".KS", ".KQ"):
             candidate = code + suffix
             info = yf.Ticker(candidate).info
-            if info.get("longName") and info.get("quoteType") == "EQUITY":
+            if (info.get("longName") or info.get("shortName")) and info.get("quoteType") == "EQUITY":
                 return candidate
         raise TickerNotFoundError(f"'{code}' 종목코드를 KOSPI/KOSDAQ에서 찾을 수 없습니다.")
     return code
