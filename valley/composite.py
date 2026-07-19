@@ -29,6 +29,7 @@ COMPOSITE_INDICATORS = {
         {"key": "KR_CPI_YOY", "label": "CPI 상승률 (전년동월대비 %)"},
         {"key": "KR_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
         {"key": "KR_M2_GDP", "label": "M2 / 명목GDP"},
+        {"key": "KR_EXPORTS_YOY", "label": "수출 증가율 (전년동월대비 %)"},
     ],
 }
 
@@ -89,6 +90,20 @@ def _m2_to_gdp(country: str) -> pd.Series:
     return df["m2"] / df["gdp"]
 
 
+def _exports_yoy() -> pd.Series:
+    """수출액(KR_EXPORTS, 통관기준 월중 원계열)을 전년동월대비 상승률(%)로 변환한다.
+
+    KR_EXPORTS는 월별 값이 연간 합계와 별도 계열로 존재해(연간 합계가 월별 12개월 합과
+    가깝게 나옴) 누적계열이 아니라 월중 값임을 확인했다 — 그래서 CPI YoY와 동일하게
+    pct_change(12)로 안전하게 전년동월대비를 계산할 수 있다.
+    """
+    exports = get_indicator_series("KR_EXPORTS")
+    yoy = (exports.pct_change(12) * 100).dropna()
+    if yoy.empty:
+        raise MacroDataError("수출 증가율을 계산할 만큼 데이터가 충분하지 않습니다.")
+    return yoy
+
+
 def _rate_spread() -> pd.Series:
     """한미 정책금리차 = 미국 연방기금금리 - 한국 기준금리 (월별, 겹치는 구간만)."""
     us_rate = get_indicator_series("US_FEDFUNDS")
@@ -106,6 +121,7 @@ _COMPUTE = {
     "KR_REAL_RATE": lambda: _real_rate("KR"),
     "US_M2_GDP": lambda: _m2_to_gdp("US"),
     "KR_M2_GDP": lambda: _m2_to_gdp("KR"),
+    "KR_EXPORTS_YOY": _exports_yoy,
     "US_KR_RATE_SPREAD": _rate_spread,
 }
 
