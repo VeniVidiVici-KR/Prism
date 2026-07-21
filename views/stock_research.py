@@ -47,6 +47,10 @@ PRICE_PERIOD_LABELS = {
     "1y": "1년", "3y": "3년", "5y": "5년", "max": "전체",
 }
 
+# 실측(JPM/BAC/KB금융/신한지주) 기준 yfinance의 금융업 섹터 문자열. 은행뿐 아니라 보험 등도
+# 같은 섹터로 묶여 있어, 이 값과 일치하면 "제조업 FCF 기반 DCF는 부적합할 수 있다" 경고를 띄운다.
+FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+
 load_dotenv(override=True)
 
 st.title("📈 PRISM")
@@ -472,6 +476,14 @@ st.caption(
     "직접 산출합니다. 다만 이 FCF는 순차입/상환 효과를 반영하지 않은 근사치라, 앞으로 대규모 "
     "차입이나 상환을 계획한 기업일수록 오차가 커질 수 있습니다."
 )
+if snapshot.get("sector") in FINANCIAL_SECTORS:
+    # 계산 자체를 막지는 않는다 — FCF 데이터가 있으면 아래 수치는 그대로 보여주되, "계산되니
+    # 맞는 값"이라는 착각을 막기 위해 경고만 명확히 띄운다.
+    st.warning(
+        "이 종목은 금융업(은행·보험 등)입니다. 이 DCF는 제조업 FCF(영업현금흐름-자본적지출) "
+        "기반 모델이라 금융업에는 구조적으로 부적합할 수 있습니다 — 금융업은 통상 배당할인모형"
+        "(DDM)이나 P/B·ROE 기반으로 평가합니다. 아래 수치는 참고용으로만 보세요."
+    )
 if fcf_excluded_years:
     st.caption(f"3개년 평균 계산 시 FCF가 음수인 {fcf_excluded_years}개 연도는 제외했습니다.")
 if latest_fcf is None:

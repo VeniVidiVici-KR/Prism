@@ -101,22 +101,34 @@ def get_quarterly_financial_history(ticker: str, quarters: int = 5) -> pd.DataFr
 
 
 def get_free_cash_flow_history(ticker: str, years: int = 4) -> pd.Series:
-    """연도별 잉여현금흐름(FCF = 영업활동현금흐름 - 자본적지출) 시계열을 반환한다."""
+    """연도별 잉여현금흐름(FCF) 시계열을 반환한다.
+
+    yfinance가 제공하는 "Free Cash Flow" 행을 최우선으로 쓴다 — 실측 확인 결과 이 행은
+    OCF-Capex(기존 계산식)와 완전히 동일한 값을 주지만(AAPL/MSFT/TSLA/삼성전자/KB금융/
+    신한지주 전부 diff=0 확인), 은행 등 일부 종목(예: JPM, BAC)은 현금흐름표에 "Capital
+    Expenditure" 행 자체가 없어 기존 방식으로는 계산이 아예 불가능했다 — 이 행을 쓰면
+    그 경우도 해결된다. "Free Cash Flow" 행이 없는 (드문) 종목만 기존 OCF-Capex 방식으로
+    폴백한다.
+    """
     t = yf.Ticker(ticker)
     cf = t.cashflow
 
     if cf is None or cf.empty:
         raise TickerNotFoundError(f"'{ticker}'의 현금흐름표 데이터를 찾을 수 없습니다.")
 
-    ocf = find_row(cf, ["Operating Cash Flow", "Total Cash From Operating Activities"])
-    capex = find_row(cf, ["Capital Expenditure", "CapitalExpenditure"])
-
-    if ocf is None or capex is None:
-        raise TickerNotFoundError(f"'{ticker}'의 현금흐름 항목을 찾을 수 없습니다.")
-
     cols = sorted(cf.columns)[-years:]
-    # capex는 통상 음수로 표기되므로 더하면 자본적지출만큼 차감된다.
-    fcf = (ocf.reindex(cols) + capex.reindex(cols)).dropna()
+
+    fcf_row = find_row(cf, ["Free Cash Flow", "FreeCashFlow"])
+    if fcf_row is not None:
+        fcf = fcf_row.reindex(cols).dropna()
+    else:
+        ocf = find_row(cf, ["Operating Cash Flow", "Total Cash From Operating Activities"])
+        capex = find_row(cf, ["Capital Expenditure", "CapitalExpenditure"])
+        if ocf is None or capex is None:
+            raise TickerNotFoundError(f"'{ticker}'의 현금흐름 항목을 찾을 수 없습니다.")
+        # capex는 통상 음수로 표기되므로 더하면 자본적지출만큼 차감된다.
+        fcf = (ocf.reindex(cols) + capex.reindex(cols)).dropna()
+
     if fcf.empty:
         raise TickerNotFoundError(f"'{ticker}'의 현금흐름 값이 비어있습니다.")
 
