@@ -13,6 +13,7 @@ from valley.formatting import format_money, format_multiple
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
 from valley.report import build_markdown_summary
+from valley.supply import SupplyDataError, summarize_net_trading
 from valley.valuation import (
     CoeSuggestionUnavailableError,
     ImpliedGrowthNotFoundError,
@@ -30,6 +31,7 @@ from views._cache import (
     get_financial_history,
     get_free_cash_flow_history,
     get_historical_per_pbr,
+    get_investor_net_trading,
     get_kr_ticker_directory,
     get_latest_free_cash_flow,
     get_peer_tickers,
@@ -367,6 +369,30 @@ else:
                 column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
             )
             st.caption(f"최근 {disclosure_period} 이내 공시 {len(disclosures)}건 (최신순, 최대 30건 조회)")
+
+# 3-2. 투자자별 수급 (KRX/pykrx) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
+# 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인
+# (KRX_ID/KRX_PW)이 있어야 조회되므로, 로그인 정보가 없거나 KRX가 막으면 이 섹션만
+# 경고로 안내하고 나머지 섹션(재무/DCF/Peer/공시)은 정상 동작한다.
+st.subheader("📊 투자자별 수급 (외국인·기관·개인)")
+if currency != "KRW":
+    st.info("현재는 한국 상장기업 수급만 제공합니다. 해외 종목은 투자자별 매매동향 공개 데이터가 없습니다.")
+else:
+    supply_stock_code = resolved_ticker.split(".")[0]
+    try:
+        daily_supply = get_investor_net_trading(supply_stock_code, days=20)
+    except SupplyDataError as e:
+        st.warning(f"투자자별 수급 조회에 실패했습니다: {e}")
+    else:
+        supply_summary = summarize_net_trading(daily_supply)
+        st.caption(f"최근 {len(daily_supply)}영업일 누적 순매수 (단위: 억원 · +매수우위 / -매도우위)")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("외국인", f"{supply_summary['외국인'] / 1e8:+,.0f}억원")
+        s2.metric("기관", f"{supply_summary['기관'] / 1e8:+,.0f}억원")
+        s3.metric("개인", f"{supply_summary['개인'] / 1e8:+,.0f}억원")
+
+        st.caption(f"일별 순매수 추이 (최근 {len(daily_supply)}영업일, 단위: 억원)")
+        line_chart_with_markers((daily_supply / 1e8).rename(index=lambda d: d.strftime("%m-%d")))
 
 # 4. Peer Group & PER/PBR 밴드
 st.subheader("Peer Group 비교")

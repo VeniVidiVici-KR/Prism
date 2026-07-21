@@ -22,6 +22,7 @@ from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
 from valley.peers import get_valuation_snapshot as _get_valuation_snapshot
+from valley.supply import get_investor_net_trading as _get_investor_net_trading
 
 
 @st.cache_data(ttl=None, show_spinner=False)
@@ -97,3 +98,9 @@ def get_dart_financial_statements(corp_code: str, bsns_year: int | None = None) 
 def get_dart_disclosure_list(corp_code: str, months: int = 6, page_count: int = 30) -> list[dict]:
     """공시 목록은 신규 공시가 계속 생길 수 있어 재무제표보다 ttl을 짧게 잡는다."""
     return _get_dart_disclosure_list(corp_code, months=months, page_count=page_count)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_investor_net_trading(stock_code: str, days: int = 20):
+    """당일 수급은 장중에도 갱신될 수 있어 다른 yfinance 조회들과 같은 ttl(1시간)로 맞춘다."""
+    return _get_investor_net_trading(stock_code, days)
