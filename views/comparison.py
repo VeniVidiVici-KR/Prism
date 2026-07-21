@@ -175,8 +175,11 @@ elif st.button("DCF 비교 계산"):
             implied_g_display = f"{implied_g * 100:.1f}%"
             note = ""
         except ImpliedGrowthNotFoundError:
+            # 에러가 아니라 정보성 결과다 — 현재가가 이 가정(COE 등) 아래 상식적 성장률
+            # 범위를 벗어났다는 뜻으로, 대개 시장이 이 종목에 그만큼 높은 성장을 기대하고
+            # 있다는(=고평가일 수 있다는) 신호로 읽을 수 있다.
             implied_g_display = "N/A"
-            note = "성장률 역산 불가"
+            note = "역산 불가 (현재가가 상식적 성장률 범위 밖 — 고평가 가능성)"
         except ValueError as e:
             implied_g_display = "N/A"
             note = str(e)

@@ -76,7 +76,7 @@ with st.sidebar:
             else:
                 options = [f"{c['code']} {c['name']} ({c['market']})" for c in candidates]
                 choice = st.selectbox(
-                    "검색 결과에서 종목을 선택하세요", options, key="kr_name_search_choice"
+                    "검색 결과에서 종목을 선택하세요", options, key="sr_kr_name_search_choice"
                 )
                 selected = candidates[options.index(choice)]
                 ticker = selected["code"]
@@ -123,7 +123,11 @@ with st.sidebar:
             st.info(
                 f"무위험이자율 {coe_suggestion['rf'] * 100:.2f}%"
                 f"({coe_suggestion['rf_source_label']}, {coe_suggestion['rf_as_of']:%Y-%m}) "
-                f"+ 리스크프리미엄 {risk_premium * 100:.1f}% = 제안 COE {discount_rate * 100:.2f}%"
+                # 이 discount_rate는 아래 민감도 표의 COE 축 중심값으로도 그대로 쓰인다 — 표의
+                # 열 라벨이 소수점 1자리(.1f)로 표시되는 것과 정밀도를 맞춰, 여기 안내 문구의
+                # "제안 COE"도 같은 자리수로 보여준다(실제 계산에 쓰이는 값 자체는 반올림하지
+                # 않고 그대로 둔다 — 표시만 맞춘다).
+                f"+ 리스크프리미엄 {risk_premium * 100:.1f}% = 제안 COE {discount_rate * 100:.1f}%"
             )
             coe_source = {
                 "mode": "auto",
@@ -142,10 +146,13 @@ with st.sidebar:
 
     run = st.button("조회하기", type="primary")
 
-if "has_run" not in st.session_state:
-    st.session_state.has_run = False
-if "confirmed_ticker" not in st.session_state:
-    st.session_state.confirmed_ticker = None
+# ⚠️ st.session_state는 페이지 전용이 아니라 앱 전체(세션) 공용이라, 다른 페이지와 겹치지
+# 않도록 이 페이지의 모든 키에 sr_ 접두어를 붙인다(Comparison의 cmp_has_run 충돌 사고 이후
+# 전 페이지에 동일하게 적용한 규칙).
+if "sr_has_run" not in st.session_state:
+    st.session_state.sr_has_run = False
+if "sr_confirmed_ticker" not in st.session_state:
+    st.session_state.sr_confirmed_ticker = None
 
 # ticker(사이드바의 현재 상태)는 타이핑/selectbox 조작만으로 계속 바뀌지만, 실제 조회
 # 파이프라인은 "조회하기"가 눌린 이 rerun에서만 confirmed_ticker를 갱신하고, 그 외의 모든
@@ -153,14 +160,14 @@ if "confirmed_ticker" not in st.session_state:
 # 그렇지 않으면 이름검색 selectbox에서 후보를 바꾸기만 해도(조회하기를 다시 안 눌러도)
 # 다음 rerun에서 조용히 다른 종목으로 조회가 나가버린다.
 if run:
-    st.session_state.has_run = True
-    st.session_state.confirmed_ticker = ticker
+    st.session_state.sr_has_run = True
+    st.session_state.sr_confirmed_ticker = ticker
 
-if not st.session_state.has_run:
+if not st.session_state.sr_has_run:
     st.info("왼쪽에서 티커를 입력하고 '조회하기'를 눌러주세요.")
     st.stop()
 
-ticker = st.session_state.confirmed_ticker
+ticker = st.session_state.sr_confirmed_ticker
 
 if not ticker:
     st.error("티커를 입력해주세요.")
@@ -316,10 +323,10 @@ if currency != "KRW":
 else:
     disclosure_period_labels = {"1개월": 1, "3개월": 3, "6개월": 6, "1년": 12}
     disclosure_period = st.radio(
-        "조회 기간", list(disclosure_period_labels.keys()), index=2, horizontal=True, key="disclosure_period"
+        "조회 기간", list(disclosure_period_labels.keys()), index=2, horizontal=True, key="sr_disclosure_period"
     )
     keyword_filter = st.text_input(
-        "보고서명 키워드 필터 (선택)", value="", key="disclosure_keyword"
+        "보고서명 키워드 필터 (선택)", value="", key="sr_disclosure_keyword"
     ).strip()
 
     disclosure_stock_code = resolved_ticker.split(".")[0]

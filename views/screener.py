@@ -81,13 +81,13 @@ min_cap = f3.number_input("최소 시가총액 (단위: 원래 통화)", min_val
 
 st.caption("배당수익률 하한 (%) · 국가별로 다른 기준을 걸 수 있습니다")
 d1, d2 = st.columns(2)
-kr_div_min = d1.number_input("한국(KRW)", min_value=0.0, value=0.0, step=0.5, key="kr_div_min") / 100
-us_div_min = d2.number_input("미국(USD)", min_value=0.0, value=0.0, step=0.5, key="us_div_min") / 100
+kr_div_min = d1.number_input("한국(KRW)", min_value=0.0, value=0.0, step=0.5, key="screener_kr_div_min") / 100
+us_div_min = d2.number_input("미국(USD)", min_value=0.0, value=0.0, step=0.5, key="screener_us_div_min") / 100
 
 st.caption("배당성향 하한 (%) · 국가별로 다른 기준을 걸 수 있습니다")
 p1, p2 = st.columns(2)
-kr_payout_min = p1.number_input("한국(KRW)", min_value=0.0, value=0.0, step=1.0, key="kr_payout_min") / 100
-us_payout_min = p2.number_input("미국(USD)", min_value=0.0, value=0.0, step=1.0, key="us_payout_min") / 100
+kr_payout_min = p1.number_input("한국(KRW)", min_value=0.0, value=0.0, step=1.0, key="screener_kr_payout_min") / 100
+us_payout_min = p2.number_input("미국(USD)", min_value=0.0, value=0.0, step=1.0, key="screener_us_payout_min") / 100
 
 currencies = sorted({r["currency"] for r in rows})
 selected_currencies = st.multiselect("통화", currencies, default=currencies)
