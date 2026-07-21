@@ -312,7 +312,16 @@ if yfinance_financials_failed:
             for col in ["영업이익률", "순이익률"]:
                 display_fallback[col] = display_fallback[col].map(lambda v: f"{v * 100:.1f}%" if pd.notna(v) else "N/A")
             st.dataframe(display_fallback, width="stretch")
-            line_chart_with_markers(fallback_df[["매출", "순이익"]])
+            # 매출과 순이익을 한 축에 겹치면 매출≫순이익인 종목은 순이익선이 바닥에 깔려 안
+            # 보인다 — 각자 스케일에 맞는 별도 차트로 분리한다(이중축은 새 차트 로직이라
+            # 다음 과제로 남기고, 이번엔 기존 line_chart_with_markers를 그대로 재사용).
+            rev_col, ni_col = st.columns(2)
+            with rev_col:
+                st.caption("매출")
+                line_chart_with_markers(fallback_df[["매출"]], height=240)
+            with ni_col:
+                st.caption("순이익")
+                line_chart_with_markers(fallback_df[["순이익"]], height=240)
 
             matched = dart_fallback_data["matched_account_names"]
             matched_desc = ", ".join(f"{label}→'{name}'" for label, name in matched.items() if name)
@@ -340,7 +349,16 @@ else:
         for col in ["영업이익률", "순이익률"]:
             display_history[col] = display_history[col].map(lambda v: f"{v * 100:.1f}%" if pd.notna(v) else "N/A")
         st.dataframe(display_history, width="stretch")
-        line_chart_with_markers(history_to_show[["매출", "순이익"]])
+        # 매출과 순이익을 한 축에 겹치면 매출≫순이익인 종목은 순이익선이 바닥에 깔려 안
+        # 보인다 — 각자 스케일에 맞는 별도 차트로 분리한다(이중축은 새 차트 로직이라
+        # 다음 과제로 남기고, 이번엔 기존 line_chart_with_markers를 그대로 재사용).
+        rev_col, ni_col = st.columns(2)
+        with rev_col:
+            st.caption("매출")
+            line_chart_with_markers(history_to_show[["매출"]], height=240)
+        with ni_col:
+            st.caption("순이익")
+            line_chart_with_markers(history_to_show[["순이익"]], height=240)
 
 # 3-1. 공시 목록 (DART) — yfinance 재무 성공/실패와 무관하게 한국 종목이면 항상 표시하는
 # 상시 섹션이다 (위 재무 추이의 DART 폴백과는 성격이 다름 — 폴백이 아니라 항상 노출).
@@ -538,7 +556,7 @@ if snapshot.get("sector") in FINANCIAL_SECTORS:
                 bj1, bj2, bj3 = st.columns(3)
                 bj1.metric("정당 주가", format_money(bank_justified_price, currency))
                 bj2.metric("현재 주가", format_money(snapshot["price"], currency))
-                bj3.metric("괴리율", f"{bank_price_gap * 100:+.1f}%")
+                bj3.metric("P/B×ROE 괴리율", f"{bank_price_gap * 100:+.1f}%")
             elif bank_pbr:
                 bank_pbr_gap = (bank_justified_pbr / bank_pbr) - 1
                 st.metric("PBR 괴리율 (정당 P/B ÷ 현재 PBR − 1)", f"{bank_pbr_gap * 100:+.1f}%")
@@ -553,6 +571,67 @@ if snapshot.get("sector") in FINANCIAL_SECTORS:
 
 if fcf_excluded_years:
     st.caption(f"3개년 평균 계산 시 FCF가 음수인 {fcf_excluded_years}개 연도는 제외했습니다.")
+
+# 과거 FCF 증가율 — 감으로 넣는 성장률 가정에 실측 앵커를 제공한다. get_free_cash_flow_history를
+# DCF 계산(1개년 또는 3개년 평균)과 별개로 더 긴 기간(4개년)으로 다시 불러와 계산한다.
+# ⚠️ 아래 DCF의 FCF≤0 게이팅(st.stop())과 무관하게 항상 렌더링한다 — 전 구간 FCF가 음수인
+# 적자 성장주(예: RIVN)일수록 "FCF가 개선 추세인가"가 가장 궁금한 대상인데, 예전엔 DCF 섹션
+# 안에 중첩돼 있어 DCF가 st.stop()으로 멈추면 이 표까지 통째로 안 보였다(정리 라운드 과제).
+# "세 성장률 대조"(시장 내재 성장률 포함)만 DCF 성공 시에만 의미가 있어 그 부분은 아래 DCF
+# 성공 블록에 남겨두고, growth 변수를 여기서 계산해 그대로 재사용한다(중복 조회 없음).
+st.subheader("📈 과거 FCF 증가율")
+growth = None
+try:
+    fcf_history_for_growth = get_free_cash_flow_history(resolved_ticker, years=4)
+except TickerNotFoundError as e:
+    st.info(f"과거 FCF 증가율을 계산할 수 없습니다: {e}")
+else:
+    growth = fcf_growth_history(fcf_history_for_growth)
+
+    if growth["cagr"] is not None:
+        st.metric(f"최근 {len(growth['yearly'])}개년 FCF 연평균 증가율 (CAGR)", f"{growth['cagr'] * 100:.1f}%")
+    else:
+        st.warning(f"연평균 증가율(CAGR) 계산 불가: {growth['cagr_reason']}")
+    if growth["has_non_positive_year"]:
+        st.caption("⚠️ 조회 기간 중 FCF가 0 이하인 연도가 있습니다 — 아래 표에서 확인하고, 증가율 해석에 주의하세요.")
+
+    st.caption(f"단위: {currency}")
+    growth_df = pd.DataFrame(
+        [
+            {
+                "연도": item["year"],
+                "FCF": format_money(item["fcf"], currency),
+                "전년比 증가율": f"{item['yoy'] * 100:+.1f}%" if item["yoy"] is not None else item["yoy_reason"],
+            }
+            for item in growth["yearly"]
+        ]
+    ).set_index("연도")
+    st.dataframe(growth_df, width="stretch")
+
+    if use_fade:
+        st.caption(
+            "2-stage(성장률 감쇠) 모드에서는 이 버튼을 지원하지 않습니다 — 감쇠를 끄면 "
+            "과거 CAGR을 성장률 가정으로 바로 반영할 수 있습니다."
+        )
+    elif growth["cagr"] is None:
+        st.button(
+            "이 값(CAGR)을 DCF 가정으로 쓰기", disabled=True,
+            help="CAGR을 계산할 수 없어 비활성화되었습니다.",
+        )
+    elif st.button("이 값(CAGR)을 DCF 가정으로 쓰기"):
+        raw_cagr = growth["cagr"]
+        clamped = max(0.0, min(0.30, raw_cagr))
+        # sr_growth_rate_initial 위젯이 이미 이번 run에서 렌더링된 뒤라 여기서 직접
+        # 못 바꾼다 — pending 키에 남겨두면 다음 run의 슬라이더 렌더링 "전"에 반영된다.
+        st.session_state.sr_growth_rate_pending = clamped
+        st.session_state.sr_growth_clamp_notice = (
+            f"과거 CAGR {raw_cagr * 100:.1f}%가 슬라이더 범위(0~30%)를 벗어나 "
+            f"{clamped * 100:.1f}%로 설정되었습니다."
+            if clamped != raw_cagr
+            else None
+        )
+        st.rerun()
+
 if latest_fcf is None:
     st.warning(
         "재무 데이터가 없어 DCF 계산을 진행할 수 없습니다."
@@ -594,7 +673,7 @@ else:
     c1, c2, c3 = st.columns(3)
     c1.metric("주당 내재가치 (DCF)", format_money(intrinsic, currency))
     c2.metric("현재 주가", format_money(price, currency))
-    c3.metric("괴리율", f"{upside * 100:+.1f}%")
+    c3.metric("DCF 괴리율", f"{upside * 100:+.1f}%")
     st.caption("가정치(성장률/요구수익률/영구성장률)에 따라 결과가 크게 달라질 수 있습니다. 참고용으로만 활용하세요.")
 
     st.markdown("**현재 주가에 내재된 성장률**")
@@ -619,36 +698,11 @@ else:
         if use_fade:
             st.caption("역산은 항상 단일 성장률 기준입니다 (2-stage는 미지수가 둘이라 유일해가 없음) — 초기 성장률과 비교하고 있습니다.")
 
-    # 과거 FCF 증가율 — 감으로 넣는 성장률 가정에 실측 앵커를 제공한다. get_free_cash_flow_history를
-    # DCF 계산(1개년 또는 3개년 평균)과 별개로 더 긴 기간(4개년)으로 다시 불러와 계산한다.
-    st.subheader("📈 과거 FCF 증가율")
-    try:
-        fcf_history_for_growth = get_free_cash_flow_history(resolved_ticker, years=4)
-    except TickerNotFoundError as e:
-        st.info(f"과거 FCF 증가율을 계산할 수 없습니다: {e}")
-    else:
-        growth = fcf_growth_history(fcf_history_for_growth)
-
-        if growth["cagr"] is not None:
-            st.metric(f"최근 {len(growth['yearly'])}개년 FCF 연평균 증가율 (CAGR)", f"{growth['cagr'] * 100:.1f}%")
-        else:
-            st.warning(f"연평균 증가율(CAGR) 계산 불가: {growth['cagr_reason']}")
-        if growth["has_non_positive_year"]:
-            st.caption("⚠️ 조회 기간 중 FCF가 0 이하인 연도가 있습니다 — 아래 표에서 확인하고, 증가율 해석에 주의하세요.")
-
-        st.caption(f"단위: {currency}")
-        growth_df = pd.DataFrame(
-            [
-                {
-                    "연도": item["year"],
-                    "FCF": format_money(item["fcf"], currency),
-                    "전년比 증가율": f"{item['yoy'] * 100:+.1f}%" if item["yoy"] is not None else item["yoy_reason"],
-                }
-                for item in growth["yearly"]
-            ]
-        ).set_index("연도")
-        st.dataframe(growth_df, width="stretch")
-
+    # 세 성장률 대조 — 과거 FCF CAGR(growth)은 위 "📈 과거 FCF 증가율" 섹션에서 이미 계산해뒀다
+    # (DCF 게이팅과 무관하게 항상 실행되므로 재조회하지 않고 그대로 재사용). 여기서는 방금 구한
+    # 시장 내재 성장률(implied_g)까지 더해 세 가지를 나란히 비교한다 — 이 비교 자체는 DCF가
+    # 성공했을 때만 의미가 있어 이 블록 안에 남겨둔다.
+    if growth is not None:
         st.markdown("**세 성장률 대조**")
         cagr_display = f"{growth['cagr'] * 100:.1f}%" if growth["cagr"] is not None else "계산 불가"
         implied_g_display = f"{implied_g * 100:.1f}%" if implied_g is not None else "역산 불가"
@@ -656,30 +710,6 @@ else:
         ct1.metric("과거 실제 (CAGR)", cagr_display)
         ct2.metric("내 가정" + (" (초기)" if use_fade else ""), f"{growth_rate_initial * 100:.1f}%")
         ct3.metric("시장 내재", implied_g_display)
-
-        if use_fade:
-            st.caption(
-                "2-stage(성장률 감쇠) 모드에서는 이 버튼을 지원하지 않습니다 — 감쇠를 끄면 "
-                "과거 CAGR을 성장률 가정으로 바로 반영할 수 있습니다."
-            )
-        elif growth["cagr"] is None:
-            st.button(
-                "이 값(CAGR)을 DCF 가정으로 쓰기", disabled=True,
-                help="CAGR을 계산할 수 없어 비활성화되었습니다.",
-            )
-        elif st.button("이 값(CAGR)을 DCF 가정으로 쓰기"):
-            raw_cagr = growth["cagr"]
-            clamped = max(0.0, min(0.30, raw_cagr))
-            # sr_growth_rate_initial 위젯이 이미 이번 run에서 렌더링된 뒤라 여기서 직접
-            # 못 바꾼다 — pending 키에 남겨두면 다음 run의 슬라이더 렌더링 "전"에 반영된다.
-            st.session_state.sr_growth_rate_pending = clamped
-            st.session_state.sr_growth_clamp_notice = (
-                f"과거 CAGR {raw_cagr * 100:.1f}%가 슬라이더 범위(0~30%)를 벗어나 "
-                f"{clamped * 100:.1f}%로 설정되었습니다."
-                if clamped != raw_cagr
-                else None
-            )
-            st.rerun()
 
     st.subheader("민감도 분석 (성장률 × 요구수익률)")
     grid = sensitivity_grid(
