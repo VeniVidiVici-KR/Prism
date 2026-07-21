@@ -41,6 +41,38 @@ _FORM_TYPE_LABELS = {
     "SCHEDULE 13G/A": "SCHEDULE 13G/A(지분보고 정정)",
 }
 
+# 유형 필터용 범주 묶음 — AAPL/MSFT/JPM/NVDA/GOOGL/TSLA 실측(각 최근 100건) 기준으로 실제
+# 나타나는 form 문자열을 확인해 매핑했다. ⚠️ 여기 없는 form(13F-HR, CERT, 8-A12B, S-3ASR,
+# ARS, IRANNOTICE, 25-NSE 등 드물게 보이는 유형)은 의도적으로 다 나열하지 않고 "기타" 범주로
+# 묶는다 — categorize_form()이 매핑되지 않은 form을 "기타"로 폴백하므로, 새 form이 나타나도
+# 절대 화면에서 통째로 사라지지 않는다(필터에서 빠졌다고 데이터가 없어지면 안 된다는 요구사항).
+FORM_CATEGORIES: dict[str, list[str]] = {
+    "실적·정기보고": ["10-K", "10-K/A", "10-Q", "10-Q/A"],
+    "중요 사건": ["8-K", "8-K/A"],
+    "지분 변동": [
+        "3", "3/A", "4", "4/A", "5", "5/A",
+        "SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A",
+        "SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A",
+        "144", "144/A",
+    ],
+    "주주총회·기타": [
+        "DEF 14A", "DEFA14A", "DEFM14A", "PRE 14A", "PREM14A",
+        "S-1", "S-1/A", "S-3", "S-3/A", "S-8", "S-8 POS",
+        "424B1", "424B2", "424B3", "424B4", "424B5", "424B8",
+        "FWP",
+    ],
+}
+OTHER_CATEGORY = "기타"
+ALL_CATEGORIES = list(FORM_CATEGORIES.keys()) + [OTHER_CATEGORY]
+
+
+def categorize_form(form: str) -> str:
+    """form 코드를 실무 범주로 묶는다. 매핑에 없는 form은 전부 "기타"로 폴백한다(누락 없음)."""
+    for category, forms in FORM_CATEGORIES.items():
+        if form in forms:
+            return category
+    return OTHER_CATEGORY
+
 
 class EdgarDataError(Exception):
     """EDGAR 공시 데이터를 조회하지 못했을 때 발생 (네트워크/매핑 없음/파싱 등)."""

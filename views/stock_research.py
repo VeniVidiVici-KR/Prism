@@ -1,5 +1,6 @@
 """Stock Research — 종목 재무분석 + 간단 DCF 밸류에이션 + AI 해설."""
 
+from collections import Counter
 from datetime import date
 
 import pandas as pd
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 from valley.ai_commentary import generate_commentary
 from valley.dart import DartDataError
 from valley.data import TickerNotFoundError
-from valley.edgar import EdgarDataError, describe_form_type
+from valley.edgar import ALL_CATEGORIES, EdgarDataError, categorize_form, describe_form_type
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
@@ -421,41 +422,76 @@ else:
             st.caption(f"최근 {disclosure_period} 이내 공시 {len(disclosures)}건 (최신순, 최대 30건 조회)")
 
 # 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용 파일럿.
-# ⚠️ 이번엔 목록 조회까지만 다룬다 — 유형 필터·본문 요약은 검증 후 다음 라운드.
+# ⚠️ 이번 라운드에서 유형 필터를 추가했다 — 본문 요약은 여전히 다음 라운드 범위 밖.
 st.subheader("📄 최근 공시 (SEC EDGAR)")
 if currency == "KRW":
     st.info("한국 종목은 위 DART 공시를 이용하세요. SEC EDGAR는 미국 상장기업 전용입니다.")
 else:
     try:
         edgar_cik = get_cik(resolved_ticker)
-        edgar_filings = get_recent_filings(edgar_cik, limit=30)
+        # ⚠️ 30건이면 대형주는 Form 4(임원 지분변동) 홍수에 10-K/10-Q가 파묻혀 안 보일 수
+        # 있어(실측: AAPL 30건 중 10-K 0건, 100건 중에서야 1건 등장) 100건으로 늘렸다.
+        # SEC submissions API의 filings.recent는 한 응답에 최대 1000건까지 오므로(실측 확인),
+        # 추가 호출 없이 같은 캐시된 응답 안에서 더 넓은 범위를 확보한다.
+        edgar_filings = get_recent_filings(edgar_cik, limit=100)
     except EdgarDataError as e:
         st.warning(f"SEC EDGAR 공시 목록을 가져오지 못했습니다: {e}")
     else:
         if not edgar_filings:
             st.info("최근 공시가 없습니다.")
         else:
-            edgar_df = pd.DataFrame(
-                [
-                    {
-                        "접수일": f["filing_date"],
-                        "유형": describe_form_type(f["form"]),
-                        "설명": f["description"] or "-",
-                        "원문": f["url"],
-                    }
-                    for f in edgar_filings
-                ]
+            # 세션 키(sr_ 접두어)로 관리해 다른 위젯 조작으로 재실행돼도 필터 선택이 유지되게
+            # 한다. "전체"를 선택하면 범주 구분 없이 다 보여준다(범주 설계에서 빠진 form도
+            # 항상 "전체"로는 볼 수 있어야 한다는 요구사항).
+            if "sr_edgar_form_categories" not in st.session_state:
+                st.session_state.sr_edgar_form_categories = ["실적·정기보고", "중요 사건"]
+            category_options = ALL_CATEGORIES + ["전체"]
+            selected_categories = st.multiselect(
+                "공시 유형", category_options, key="sr_edgar_form_categories",
+                help="기본은 실적·정기보고(10-K/10-Q)와 중요 사건(8-K) 위주입니다. "
+                "Form 4 등 임원 지분변동이 많은 대형주는 기본 필터에서 걸러집니다.",
             )
-            st.dataframe(
-                edgar_df,
-                width="stretch",
-                hide_index=True,
-                column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
-            )
-            st.caption(f"최근 공시 {len(edgar_filings)}건 (최신순, 최대 30건 조회) · 출처: SEC EDGAR")
+
+            counts_by_category = Counter(categorize_form(f["form"]) for f in edgar_filings)
             st.caption(
-                "유형 필터·본문 요약은 이 파일럿 범위 밖입니다 — 목록 확인 후 다음 라운드에서 추가 예정입니다."
+                f"최근 {len(edgar_filings)}건 중 범주별 건수: "
+                + " · ".join(f"{cat} {counts_by_category.get(cat, 0)}건" for cat in ALL_CATEGORIES)
             )
+
+            if "전체" in selected_categories:
+                filtered_filings = edgar_filings
+            else:
+                # 선택이 비어 있으면(체크 다 해제) 의도적으로 빈 결과로 취급한다 — 아무 범주도
+                # 안 골랐는데 조용히 전체를 보여주면 "필터가 걸리긴 한 건지" 혼란스럽다. 아래
+                # 0건 안내가 "전체"를 켜라고 명확히 알려준다.
+                filtered_filings = [
+                    f for f in edgar_filings if categorize_form(f["form"]) in selected_categories
+                ]
+
+            if not filtered_filings:
+                st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")
+            else:
+                edgar_df = pd.DataFrame(
+                    [
+                        {
+                            "접수일": f["filing_date"],
+                            "유형": describe_form_type(f["form"]),
+                            "설명": f["description"] or "-",
+                            "원문": f["url"],
+                        }
+                        for f in filtered_filings
+                    ]
+                )
+                st.dataframe(
+                    edgar_df,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
+                )
+                st.caption(
+                    f"{len(filtered_filings)}건 표시 (최근 {len(edgar_filings)}건 중 선택 유형 필터 적용, 최신순) · 출처: SEC EDGAR"
+                )
+            st.caption("본문 요약은 이 파일럿 범위 밖입니다 — 목록·유형 필터 확인 후 다음 라운드에서 추가 예정입니다.")
 
 # 3-2. 투자자별 수급 (KRX/pykrx) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
 # 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인
