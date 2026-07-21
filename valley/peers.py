@@ -188,11 +188,47 @@ def get_valuation_snapshot(ticker: str) -> dict:
         "market_cap": snapshot.get("market_cap"),
         "per": per,
         "pbr": pbr,
+        "bvps": bvps,
         "forward_per": forward_per,
         "dividend_yield": dividend_yield,
         "payout_ratio": payout_ratio,
         "roe": roe,
     }
+
+
+def get_roe_history(ticker: str, years: int = 3) -> pd.Series:
+    """연도별 ROE(자기자본이익률) 시계열을 반환한다 (get_historical_per_pbr와 동일하게
+    손익계산서·재무상태표에 공통으로 존재하는 결산일만 사용).
+
+    적자 연도(ROE<0)도 그대로 포함한다 — FCF 3개년 평균(음수 연도 제외)과 달리, ROE는
+    이미 정규화된 비율이라 음수 연도를 빼도 "평균 계산이 성립 안 하는" 문제가 생기지
+    않는다. 오히려 적자 연도를 빼면 은행의 실제 리스크(충당금 등으로 인한 손실 가능성)를
+    과소평가하게 되므로, 단순 평균에 그대로 포함시켜 호출부가 "들쭉날쭉함" 자체를 보게 한다.
+    """
+    t = yf.Ticker(ticker)
+    fin = t.financials
+    bs = t.balance_sheet
+    if fin is None or fin.empty or bs is None or bs.empty:
+        raise ValuationDataError(f"'{ticker}'의 재무제표 데이터를 찾을 수 없습니다.")
+
+    net_income = find_row(fin, ["Net Income", "NetIncome", "Net Income Common Stockholders"])
+    equity = find_row(bs, ["Stockholders Equity", "Common Stock Equity"])
+    if net_income is None or equity is None:
+        raise ValuationDataError(f"'{ticker}'의 ROE 계산에 필요한 순이익/자본총계 항목을 찾을 수 없습니다.")
+
+    fiscal_years = sorted(set(fin.columns) & set(bs.columns))[-years:]
+
+    rows = {}
+    for fye in fiscal_years:
+        ni, eq = net_income.get(fye), equity.get(fye)
+        roe = _roe(float(ni) if pd.notna(ni) else None, float(eq) if pd.notna(eq) else None)
+        if roe is not None:
+            rows[fye.strftime("%Y")] = roe
+
+    if not rows:
+        raise ValuationDataError(f"'{ticker}'의 ROE를 계산할 수 있는 연도가 없습니다 (자본총계가 0 이하이거나 데이터 누락).")
+
+    return pd.Series(rows)
 
 
 def get_historical_per_pbr(ticker: str, years: int = 5) -> pd.DataFrame:

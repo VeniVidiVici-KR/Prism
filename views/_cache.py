@@ -21,6 +21,7 @@ from valley.dart import get_dart_financial_statements as _get_dart_financial_sta
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
+from valley.peers import get_roe_history as _get_roe_history
 from valley.peers import get_valuation_snapshot as _get_valuation_snapshot
 from valley.supply import get_investor_net_trading as _get_investor_net_trading
 
@@ -74,6 +75,11 @@ def get_peer_tickers(ticker: str, limit: int = 5):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_historical_per_pbr(ticker: str, years: int = 5):
     return _get_historical_per_pbr(ticker, years)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_roe_history(ticker: str, years: int = 3):
+    return _get_roe_history(ticker, years)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

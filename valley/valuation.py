@@ -295,6 +295,25 @@ def sensitivity_grid(
     }
 
 
+def justified_pbr(roe: float, coe: float) -> float:
+    """정당(justified) P/B = ROE / COE (단순형, 성장률 미반영).
+
+    은행 등 금융업의 1차 밸류에이션 지표: 자기자본으로 요구수익률(COE)보다 높은
+    ROE를 벌면 장부가 대비 프리미엄(P/B>1)을, 못 벌면 할인(P/B<1)을 받는 게
+    정당하다는 논리. 성장 포함형 (ROE-g)/(COE-g)는 g가 COE에 가까워지면 발산해
+    (simplified_dcf의 영구성장률과 같은 문제) 이번엔 쓰지 않고 단순형으로 시작한다.
+
+    Raises:
+        ValueError: COE가 0 이하이거나(계산 불가), ROE가 0 이하(적자)라 정당 P/B가
+            음수가 되어 무의미할 때.
+    """
+    if coe <= 0:
+        raise ValueError("요구수익률(COE)이 0 이하라 정당 P/B를 계산할 수 없습니다.")
+    if roe <= 0:
+        raise ValueError("ROE가 0 이하(적자)라 정당 P/B 계산이 무의미합니다. 이 모델로는 평가하기 어렵습니다.")
+    return roe / coe
+
+
 def fcf_growth_history(fcf_series: pd.Series) -> dict:
     """연도별 FCF 시계열(get_free_cash_flow_history 결과, 연도 오름차순)로부터 연도별
     전년대비 증가율(YoY)과 연평균 증가율(CAGR)을 계산한다.

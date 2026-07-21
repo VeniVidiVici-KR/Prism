@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from valley.ai_commentary import generate_commentary
 from valley.dart import DartDataError
 from valley.data import TickerNotFoundError
-from valley.formatting import format_money, format_multiple
+from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
 from valley.report import build_markdown_summary
@@ -19,6 +19,7 @@ from valley.valuation import (
     ImpliedGrowthNotFoundError,
     fcf_growth_history,
     implied_growth_rate,
+    justified_pbr,
     sensitivity_grid,
     simplified_dcf,
     suggest_coe,
@@ -38,6 +39,7 @@ from views._cache import (
     get_peer_tickers,
     get_price_history,
     get_quarterly_financial_history,
+    get_roe_history,
     get_valuation_snapshot,
     resolve_ticker,
 )
@@ -484,6 +486,71 @@ if snapshot.get("sector") in FINANCIAL_SECTORS:
         "기반 모델이라 금융업에는 구조적으로 부적합할 수 있습니다 — 금융업은 통상 배당할인모형"
         "(DDM)이나 P/B·ROE 기반으로 평가합니다. 아래 수치는 참고용으로만 보세요."
     )
+
+    st.subheader("🏦 P/B × ROE 밸류에이션 (금융업)")
+    st.caption(
+        "은행 등 금융업의 1차 밸류에이션 지표입니다. 정당(justified) P/B = ROE / COE(단순형) — "
+        "자기자본으로 요구수익률(COE)보다 높은 ROE를 벌면 장부가 대비 프리미엄을 받을 자격이 "
+        "있다는 논리입니다."
+    )
+    bank_pbr = target_valuation.get("pbr")
+    bank_bvps = target_valuation.get("bvps")
+    bank_roe_1y = target_valuation.get("roe")
+    try:
+        bank_roe_history = get_roe_history(resolved_ticker, years=3)
+    except ValuationDataError as e:
+        bank_roe_history = None
+        st.info(f"3개년 평균 ROE를 계산할 수 없습니다: {e}")
+    bank_roe_avg = float(bank_roe_history.mean()) if bank_roe_history is not None and not bank_roe_history.empty else None
+
+    br1, br2, br3, br4 = st.columns(4)
+    br1.metric("현재 PBR", format_multiple(bank_pbr))
+    br2.metric("ROE (단년)", format_percent(bank_roe_1y))
+    br3.metric("ROE (3개년 평균)", format_percent(bank_roe_avg))
+    br4.metric("요구수익률 (COE)", f"{discount_rate * 100:.1f}%")
+
+    if bank_roe_history is not None:
+        if (bank_roe_history < 0).any():
+            st.caption("⚠️ 최근 3개년 중 ROE가 음수인 연도가 있습니다 — 3개년 평균이 그 해 실적의 영향을 그대로 받습니다.")
+        if bank_roe_1y is not None and bank_roe_avg is not None and abs(bank_roe_1y - bank_roe_avg) > 0.05:
+            st.caption(
+                f"단년 ROE({format_percent(bank_roe_1y)})와 3개년 평균({format_percent(bank_roe_avg)})의 "
+                "차이가 커, 이 종목 실적이 들쭉날쭉하다는 신호일 수 있습니다."
+            )
+
+    # ⚠️ 정당 P/B는 3개년 평균 ROE를 우선 쓴다(일회성 손익으로 튄 단년 ROE 왜곡 방지). 평균을
+    # 못 구했을 때만 단년 ROE로 폴백한다 — 그래도 아무 값도 없을 때만 "계산 불가".
+    bank_roe_used = bank_roe_avg if bank_roe_avg is not None else bank_roe_1y
+    bank_roe_basis_label = "3개년 평균 ROE" if bank_roe_avg is not None else "단년 ROE"
+
+    if bank_roe_used is None:
+        st.warning("ROE를 계산할 수 없어 정당 P/B를 산출할 수 없습니다 (순이익 또는 자본총계 데이터 없음).")
+    else:
+        try:
+            bank_justified_pbr = justified_pbr(bank_roe_used, discount_rate)
+        except ValueError as e:
+            st.warning(str(e))
+        else:
+            st.write(f"**정당 P/B ({bank_roe_basis_label} 기준)**: {format_multiple(bank_justified_pbr)}")
+            if bank_bvps:
+                bank_justified_price = bank_justified_pbr * bank_bvps
+                bank_price_gap = (bank_justified_price - snapshot["price"]) / snapshot["price"]
+                bj1, bj2, bj3 = st.columns(3)
+                bj1.metric("정당 주가", format_money(bank_justified_price, currency))
+                bj2.metric("현재 주가", format_money(snapshot["price"], currency))
+                bj3.metric("괴리율", f"{bank_price_gap * 100:+.1f}%")
+            elif bank_pbr:
+                bank_pbr_gap = (bank_justified_pbr / bank_pbr) - 1
+                st.metric("PBR 괴리율 (정당 P/B ÷ 현재 PBR − 1)", f"{bank_pbr_gap * 100:+.1f}%")
+            else:
+                st.info("BVPS/PBR 정보가 없어 괴리율을 계산할 수 없습니다.")
+
+    st.caption(
+        "⚠️ 한계: 정당 P/B = ROE/COE는 현재 ROE가 앞으로도 지속된다는 가정에 기반한 단순형으로, "
+        "성장률은 반영하지 않았습니다. 일회성 손익(충당금·자산매각 등)으로 ROE가 변동하면 결과가 "
+        "왜곡될 수 있으니, 단년·3개년 평균 ROE를 함께 보고 참고용으로만 활용하세요."
+    )
+
 if fcf_excluded_years:
     st.caption(f"3개년 평균 계산 시 FCF가 음수인 {fcf_excluded_years}개 연도는 제외했습니다.")
 if latest_fcf is None:
