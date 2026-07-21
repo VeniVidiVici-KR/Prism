@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 venv/
 .dart_corp_code_cache.json
+.edgar_ticker_cik_cache.json

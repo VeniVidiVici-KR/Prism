@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from valley.ai_commentary import generate_commentary
 from valley.dart import DartDataError
 from valley.data import TickerNotFoundError
+from valley.edgar import EdgarDataError, describe_form_type
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
@@ -28,6 +29,7 @@ from views._charts import line_chart_with_markers
 from views._cache import (
     get_company_snapshot,
     get_corp_code,
+    get_cik,
     get_dart_disclosure_list,
     get_dart_financial_statements,
     get_financial_history,
@@ -37,6 +39,7 @@ from views._cache import (
     get_kr_ticker_directory,
     get_latest_free_cash_flow,
     get_peer_tickers,
+    get_recent_filings,
     get_price_history,
     get_quarterly_financial_history,
     get_roe_history,
@@ -364,7 +367,11 @@ else:
 # 상시 섹션이다 (위 재무 추이의 DART 폴백과는 성격이 다름 — 폴백이 아니라 항상 노출).
 st.subheader("📢 최근 공시 (DART)")
 if currency != "KRW":
-    st.info("현재는 한국 상장기업 공시만 지원합니다. 해외 종목 공시(SEC EDGAR 등)는 추후 지원 예정입니다.")
+    # ⚠️ 기존 DART 섹션 로직(else 분기)은 그대로 두고, 이 안내 문구만 최소로 손본다 — 바로
+    # 아래에 EDGAR 섹션이 실제로 추가됐는데 "추후 지원 예정"이라는 예전 문구를 그대로 두면
+    # 방금 만든 기능과 바로 모순되는 문구가 남는다(정리 라운드 아님, 신규 기능 추가에 딸린
+    # 최소 문구 수정으로 한정).
+    st.info("현재 DART는 한국 상장기업 공시만 지원합니다. 미국 종목은 아래 'SEC EDGAR' 섹션을 참고하세요.")
 else:
     disclosure_period_labels = {"1개월": 1, "3개월": 3, "6개월": 6, "1년": 12}
     disclosure_period = st.radio(
@@ -412,6 +419,43 @@ else:
                 column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
             )
             st.caption(f"최근 {disclosure_period} 이내 공시 {len(disclosures)}건 (최신순, 최대 30건 조회)")
+
+# 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용 파일럿.
+# ⚠️ 이번엔 목록 조회까지만 다룬다 — 유형 필터·본문 요약은 검증 후 다음 라운드.
+st.subheader("📄 최근 공시 (SEC EDGAR)")
+if currency == "KRW":
+    st.info("한국 종목은 위 DART 공시를 이용하세요. SEC EDGAR는 미국 상장기업 전용입니다.")
+else:
+    try:
+        edgar_cik = get_cik(resolved_ticker)
+        edgar_filings = get_recent_filings(edgar_cik, limit=30)
+    except EdgarDataError as e:
+        st.warning(f"SEC EDGAR 공시 목록을 가져오지 못했습니다: {e}")
+    else:
+        if not edgar_filings:
+            st.info("최근 공시가 없습니다.")
+        else:
+            edgar_df = pd.DataFrame(
+                [
+                    {
+                        "접수일": f["filing_date"],
+                        "유형": describe_form_type(f["form"]),
+                        "설명": f["description"] or "-",
+                        "원문": f["url"],
+                    }
+                    for f in edgar_filings
+                ]
+            )
+            st.dataframe(
+                edgar_df,
+                width="stretch",
+                hide_index=True,
+                column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
+            )
+            st.caption(f"최근 공시 {len(edgar_filings)}건 (최신순, 최대 30건 조회) · 출처: SEC EDGAR")
+            st.caption(
+                "유형 필터·본문 요약은 이 파일럿 범위 밖입니다 — 목록 확인 후 다음 라운드에서 추가 예정입니다."
+            )
 
 # 3-2. 투자자별 수급 (KRX/pykrx) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
 # 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인

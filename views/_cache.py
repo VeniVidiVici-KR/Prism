@@ -18,6 +18,8 @@ from valley.data import resolve_ticker as _resolve_ticker
 from valley.dart import get_corp_code as _get_corp_code
 from valley.dart import get_dart_disclosure_list as _get_dart_disclosure_list
 from valley.dart import get_dart_financial_statements as _get_dart_financial_statements
+from valley.edgar import get_cik as _get_cik
+from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
@@ -110,3 +112,17 @@ def get_dart_disclosure_list(corp_code: str, months: int = 6, page_count: int = 
 def get_investor_net_trading(stock_code: str, days: int = 20):
     """당일 수급은 장중에도 갱신될 수 있어 다른 yfinance 조회들과 같은 ttl(1시간)로 맞춘다."""
     return _get_investor_net_trading(stock_code, days)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_cik(ticker: str) -> str:
+    """티커-CIK 매핑도 DART corp_code처럼 거의 안 바뀌므로 ttl을 길게 잡는다(valley/edgar.py에
+    로컬 파일 캐시도 있음)."""
+    return _get_cik(ticker)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
+    """공시 목록은 신규 공시가 계속 생길 수 있어 티커-CIK 매핑보다 ttl을 짧게 잡는다
+    (DART 공시 목록 캐싱과 동일한 기준)."""
+    return _get_recent_filings(cik, limit)
