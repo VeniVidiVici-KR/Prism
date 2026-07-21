@@ -1,6 +1,8 @@
 """밸류에이션 계산 로직. UI(Streamlit)·yfinance 의존성 없이, valley/macro.py의 조회 함수만
 재사용하는 순수 로직으로 구성."""
 
+import pandas as pd
+
 from valley.macro import get_indicator_series
 
 
@@ -290,4 +292,59 @@ def sensitivity_grid(
         "discount_axis": discount_axis,
         "intrinsic_value": intrinsic_grid,
         "upside": upside_grid,
+    }
+
+
+def fcf_growth_history(fcf_series: pd.Series) -> dict:
+    """연도별 FCF 시계열(get_free_cash_flow_history 결과, 연도 오름차순)로부터 연도별
+    전년대비 증가율(YoY)과 연평균 증가율(CAGR)을 계산한다.
+
+    ⚠️ FCF는 매출/순이익과 달리 변동이 극심해(대규모 capex 등으로 음수가 됐다 회복하면
+    증가율이 수백 %로 튐), 아래 규칙을 엄격히 지킨다:
+    - YoY는 "전년 FCF가 0 이하"면 부호까지 뒤집혀 무의미하므로 계산하지 않고 사유를 남긴다.
+    - CAGR은 시작·종료 연도 FCF가 "둘 다 양수"여야 기하평균이 의미를 가지므로, 그 조건이
+      깨지면 억지로 숫자를 만들지 않고 사유를 남긴다. 단순 연평균(YoY들의 평균)은 튀는 값에
+      취약해 기본으로 쓰지 않는다 — CAGR(시작→끝, 기간 기하평균) 방식만 쓴다.
+    - 시계열 안에 0 이하인 연도가 하나라도 있으면 has_non_positive_year로 알린다.
+
+    Returns:
+        {
+            "yearly": [{"year": str, "fcf": float, "yoy": float | None, "yoy_reason": str | None}, ...],
+            "cagr": float | None,
+            "cagr_reason": str | None,
+            "has_non_positive_year": bool,
+        }
+    """
+    years_list = list(fcf_series.index)
+    values = [float(v) for v in fcf_series.values]
+
+    yearly = []
+    for i, (year, fcf) in enumerate(zip(years_list, values)):
+        if i == 0:
+            yoy, yoy_reason = None, "첫 연도(비교 대상 없음)"
+        else:
+            prev = values[i - 1]
+            if prev <= 0:
+                yoy, yoy_reason = None, "계산 불가(전년 FCF≤0)"
+            else:
+                yoy, yoy_reason = (fcf - prev) / prev, None
+        yearly.append({"year": year, "fcf": fcf, "yoy": yoy, "yoy_reason": yoy_reason})
+
+    has_non_positive_year = any(v <= 0 for v in values)
+
+    if len(values) < 2:
+        cagr, cagr_reason = None, "데이터가 2개년 미만이라 계산 불가"
+    else:
+        start, end = values[0], values[-1]
+        if start <= 0 or end <= 0:
+            cagr, cagr_reason = None, "계산 불가(시작/종료 FCF가 음수)"
+        else:
+            periods = len(values) - 1
+            cagr, cagr_reason = (end / start) ** (1 / periods) - 1, None
+
+    return {
+        "yearly": yearly,
+        "cagr": cagr,
+        "cagr_reason": cagr_reason,
+        "has_non_positive_year": has_non_positive_year,
     }

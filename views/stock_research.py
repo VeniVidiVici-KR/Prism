@@ -17,6 +17,7 @@ from valley.supply import SupplyDataError, summarize_net_trading
 from valley.valuation import (
     CoeSuggestionUnavailableError,
     ImpliedGrowthNotFoundError,
+    fcf_growth_history,
     implied_growth_rate,
     sensitivity_grid,
     simplified_dcf,
@@ -100,8 +101,26 @@ with st.sidebar:
         growth_rate_initial = st.slider("초기 성장률", 0.0, 0.30, 0.12, 0.01, format="%.2f")
         growth_rate_terminal = st.slider("말기 성장률", 0.0, 0.30, 0.04, 0.01, format="%.2f")
     else:
-        growth_rate_initial = st.slider("연간 FCF 성장률", 0.0, 0.30, 0.08, 0.01, format="%.2f")
+        # ⚠️ 세션 키로 관리한다 — 아래 DCF 섹션의 "과거 FCF 증가율(CAGR)을 가정으로 쓰기"
+        # 버튼이 이 값을 반영하기 위해서다. 페이지 접두어 규칙(sr_)을 지켜 다른 페이지의
+        # 세션 키와 겹치지 않게 한다.
+        # ⚠️ Streamlit은 key가 있는 위젯이 "이미 렌더링된 뒤"에는 같은 run 안에서 그
+        # session_state를 직접 못 바꾸게 막는다(StreamlitAPIException). 그래서 버튼은
+        # sr_growth_rate_initial을 직접 건드리지 않고, 이 슬라이더가 렌더링되기 "전"인
+        # 여기서만 sr_growth_rate_pending(있다면)을 실제 값에 반영한 뒤 지운다.
+        if "sr_growth_rate_pending" in st.session_state:
+            st.session_state.sr_growth_rate_initial = st.session_state["sr_growth_rate_pending"]
+            del st.session_state["sr_growth_rate_pending"]
+        elif "sr_growth_rate_initial" not in st.session_state:
+            st.session_state.sr_growth_rate_initial = 0.08  # 기존 기본값 그대로
+        growth_rate_initial = st.slider(
+            "연간 FCF 성장률", 0.0, 0.30, step=0.01, format="%.2f", key="sr_growth_rate_initial"
+        )
         growth_rate_terminal = None
+        clamp_notice = st.session_state.get("sr_growth_clamp_notice")
+        if clamp_notice:
+            st.info(clamp_notice)
+            st.session_state.sr_growth_clamp_notice = None
     use_auto_coe = st.checkbox(
         "COE 자동제안 사용 (무위험이자율 + 리스크프리미엄)",
         value=False,
@@ -520,6 +539,68 @@ else:
         st.caption(f"당신의 가정({your_growth_label}) {growth_rate_initial * 100:.1f}% vs 시장 내재 {implied_g * 100:.1f}%")
         if use_fade:
             st.caption("역산은 항상 단일 성장률 기준입니다 (2-stage는 미지수가 둘이라 유일해가 없음) — 초기 성장률과 비교하고 있습니다.")
+
+    # 과거 FCF 증가율 — 감으로 넣는 성장률 가정에 실측 앵커를 제공한다. get_free_cash_flow_history를
+    # DCF 계산(1개년 또는 3개년 평균)과 별개로 더 긴 기간(4개년)으로 다시 불러와 계산한다.
+    st.subheader("📈 과거 FCF 증가율")
+    try:
+        fcf_history_for_growth = get_free_cash_flow_history(resolved_ticker, years=4)
+    except TickerNotFoundError as e:
+        st.info(f"과거 FCF 증가율을 계산할 수 없습니다: {e}")
+    else:
+        growth = fcf_growth_history(fcf_history_for_growth)
+
+        if growth["cagr"] is not None:
+            st.metric(f"최근 {len(growth['yearly'])}개년 FCF 연평균 증가율 (CAGR)", f"{growth['cagr'] * 100:.1f}%")
+        else:
+            st.warning(f"연평균 증가율(CAGR) 계산 불가: {growth['cagr_reason']}")
+        if growth["has_non_positive_year"]:
+            st.caption("⚠️ 조회 기간 중 FCF가 0 이하인 연도가 있습니다 — 아래 표에서 확인하고, 증가율 해석에 주의하세요.")
+
+        st.caption(f"단위: {currency}")
+        growth_df = pd.DataFrame(
+            [
+                {
+                    "연도": item["year"],
+                    "FCF": format_money(item["fcf"], currency),
+                    "전년比 증가율": f"{item['yoy'] * 100:+.1f}%" if item["yoy"] is not None else item["yoy_reason"],
+                }
+                for item in growth["yearly"]
+            ]
+        ).set_index("연도")
+        st.dataframe(growth_df, width="stretch")
+
+        st.markdown("**세 성장률 대조**")
+        cagr_display = f"{growth['cagr'] * 100:.1f}%" if growth["cagr"] is not None else "계산 불가"
+        implied_g_display = f"{implied_g * 100:.1f}%" if implied_g is not None else "역산 불가"
+        ct1, ct2, ct3 = st.columns(3)
+        ct1.metric("과거 실제 (CAGR)", cagr_display)
+        ct2.metric("내 가정" + (" (초기)" if use_fade else ""), f"{growth_rate_initial * 100:.1f}%")
+        ct3.metric("시장 내재", implied_g_display)
+
+        if use_fade:
+            st.caption(
+                "2-stage(성장률 감쇠) 모드에서는 이 버튼을 지원하지 않습니다 — 감쇠를 끄면 "
+                "과거 CAGR을 성장률 가정으로 바로 반영할 수 있습니다."
+            )
+        elif growth["cagr"] is None:
+            st.button(
+                "이 값(CAGR)을 DCF 가정으로 쓰기", disabled=True,
+                help="CAGR을 계산할 수 없어 비활성화되었습니다.",
+            )
+        elif st.button("이 값(CAGR)을 DCF 가정으로 쓰기"):
+            raw_cagr = growth["cagr"]
+            clamped = max(0.0, min(0.30, raw_cagr))
+            # sr_growth_rate_initial 위젯이 이미 이번 run에서 렌더링된 뒤라 여기서 직접
+            # 못 바꾼다 — pending 키에 남겨두면 다음 run의 슬라이더 렌더링 "전"에 반영된다.
+            st.session_state.sr_growth_rate_pending = clamped
+            st.session_state.sr_growth_clamp_notice = (
+                f"과거 CAGR {raw_cagr * 100:.1f}%가 슬라이더 범위(0~30%)를 벗어나 "
+                f"{clamped * 100:.1f}%로 설정되었습니다."
+                if clamped != raw_cagr
+                else None
+            )
+            st.rerun()
 
     st.subheader("민감도 분석 (성장률 × 요구수익률)")
     grid = sensitivity_grid(
