@@ -1,12 +1,12 @@
 """SEC EDGAR 8-K 공시 원문을 OpenAI 호환 API로 한국어 요약한다.
 
-ai_commentary.py와 동일한 OpenAI 클라이언트 패턴(OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL)을
-재사용한다. 이번 라운드는 8-K만 다룬다 — 10-K/10-Q는 길이·비용 설계가 달라 다음 라운드.
+valley.llm의 공통 엔진 헬퍼(학교 게이트웨이/Gemini)를 재사용한다. 이번 라운드는 8-K만
+다룬다 — 10-K/10-Q는 길이·비용 설계가 달라 다음 라운드.
 """
 
-import os
+from openai import RateLimitError
 
-from openai import OpenAI
+from valley.llm import get_llm_client
 
 SYSTEM_PROMPT = """당신은 개인 투자자를 위한 SEC 공시 리서치 보조 도구입니다.
 아래에 주어진 미국 상장기업의 8-K(수시공시) 원문을 한국어로 요약하세요.
@@ -46,20 +46,23 @@ def _build_user_prompt(company_name: str, form: str, filing_date: str, text: str
 """
 
 
-def summarize_8k_filing(company_name: str, form: str, filing_date: str, text: str, truncated: bool) -> str:
+def summarize_8k_filing(
+    company_name: str, form: str, filing_date: str, text: str, truncated: bool, engine: str | None = None
+) -> str:
     """8-K 원문 텍스트(get_8k_filing_text 결과)를 받아 한국어 요약 문자열을 반환한다.
 
+    Args:
+        engine: valley.llm의 ENGINE_SCHOOL|ENGINE_GEMINI. None(기본값)이면 기존과 동일하게
+            학교 게이트웨이를 쓴다(하위호환).
+
     Raises:
-        EdgarSummaryError: API 키 없음, 호출 실패, 빈 응답 중 하나.
+        EdgarSummaryError: API 키 없음, 요청 한도 초과, 호출 실패, 빈 응답 중 하나.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise EdgarSummaryError("OPENAI_API_KEY가 설정되어 있지 않습니다. .env 파일을 확인하세요.")
+    try:
+        client, model, engine_label = get_llm_client(engine)
+    except Exception as e:
+        raise EdgarSummaryError(str(e)) from e
 
-    base_url = os.environ.get("OPENAI_BASE_URL") or None
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
     user_prompt = _build_user_prompt(company_name, form, filing_date, text, truncated)
 
     try:
@@ -71,6 +74,8 @@ def summarize_8k_filing(company_name: str, form: str, filing_date: str, text: st
             ],
             temperature=0.3,
         )
+    except RateLimitError as e:
+        raise EdgarSummaryError(f"{engine_label} API 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.") from e
     except Exception as e:
         raise EdgarSummaryError(f"AI 요약 생성 중 오류가 발생했습니다: {e}") from e
 

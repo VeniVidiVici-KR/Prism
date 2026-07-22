@@ -20,6 +20,7 @@ from valley.edgar import (
 from valley.edgar_summary import EdgarSummaryError
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
+from valley.llm import ENGINE_GEMINI, ENGINE_LABELS, ENGINE_SCHOOL, is_engine_available
 from valley.peers import ValuationDataError, build_valuation_table
 from valley.report import build_markdown_summary
 from valley.supply import SupplyDataError, summarize_net_trading
@@ -184,6 +185,28 @@ with st.sidebar:
         coe_source["coe"] = discount_rate
     terminal_growth = st.slider("영구성장률", 0.0, 0.05, 0.025, 0.005, format="%.3f")
     years = st.slider("투영 연수", 3, 10, 5, 1)
+
+    # AI 엔진 선택 — AI 해설·8-K 요약 둘 다에 적용되는 페이지 전역 설정이라 사이드바에 둔다
+    # (특정 버튼 근처에 두면 "이 버튼에만 적용되는 설정"으로 오해하기 쉽다). ⚠️ 자동 폴백
+    # 없음 — 여기서 고른 엔진만 쓰이고, 학교 크레딧 소진 등의 이유로 조용히 바뀌지 않는다.
+    st.subheader("AI 엔진")
+    engine_options = [ENGINE_SCHOOL, ENGINE_GEMINI]
+    if "sr_ai_engine" not in st.session_state:
+        st.session_state.sr_ai_engine = ENGINE_SCHOOL
+    selected_engine = st.radio(
+        "AI 해설·8-K 요약에 사용할 엔진",
+        engine_options,
+        format_func=lambda e: ENGINE_LABELS[e] + ("" if is_engine_available(e) else " (키 미설정)"),
+        key="sr_ai_engine",
+        help="10-K처럼 긴 문서를 요약할 때 학교 크레딧을 아끼고 싶다면 Gemini를 선택하세요. "
+        "직접 고른 엔진으로만 생성되며, 자동으로 바뀌지 않습니다.",
+    )
+    if not is_engine_available(selected_engine):
+        st.warning(
+            f"{ENGINE_LABELS[selected_engine]} API 키가 설정되어 있지 않습니다. "
+            f".env에 {'OPENAI_API_KEY' if selected_engine == ENGINE_SCHOOL else 'GEMINI_API_KEY'}를 "
+            "추가하기 전까지는 이 엔진으로 생성이 실패합니다."
+        )
 
     run = st.button("조회하기", type="primary")
 
@@ -506,28 +529,38 @@ else:
                 # 버튼 없음). accession_number가 없는 필링(이론상 없어야 함)은 건너뛴다.
                 eight_k_filings = [f for f in filings if f["form"] == "8-K" and f.get("accession_number")]
                 if eight_k_filings:
-                    st.caption("🤖 8-K(수시공시) 본문 AI 요약 — 건별로 버튼을 눌러야 생성됩니다(자동/일괄 요약 없음).")
+                    st.caption(
+                        f"🤖 8-K(수시공시) 본문 AI 요약({ENGINE_LABELS[selected_engine]}) — 건별로 버튼을 "
+                        "눌러야 생성됩니다(자동/일괄 요약 없음)."
+                    )
                     for f in eight_k_filings:
                         accession_number = f["accession_number"]
+                        # ⚠️ (accession_number, engine) 조합으로 키를 잡는다 — accession_number만
+                        # 쓰면 학교 게이트웨이로 요약한 뒤 사이드바에서 Gemini로 바꿔도 이전(학교)
+                        # 결과가 그대로 남아있는 것처럼 보이는 사고가 난다. 엔진별로 독립 저장하면
+                        # 서로 덮어쓰지 않고, 엔진을 되돌렸을 때도 그 엔진의 기존 결과가 재호출 없이
+                        # 바로 나온다.
+                        summary_key = (accession_number, selected_engine)
                         with st.expander(f"{f['filing_date']} · 8-K 요약"):
-                            stored_summary = st.session_state.sr_edgar_8k_summaries.get(accession_number)
+                            stored_summary = st.session_state.sr_edgar_8k_summaries.get(summary_key)
                             if stored_summary is None:
                                 if st.button(
-                                    "AI 요약 생성하기", key=f"sr_edgar_8k_summarize_btn_{accession_number}"
+                                    "AI 요약 생성하기",
+                                    key=f"sr_edgar_8k_summarize_btn_{accession_number}_{selected_engine}",
                                 ):
-                                    with st.spinner("공시 원문을 가져와 요약하는 중..."):
+                                    with st.spinner(f"공시 원문을 가져와 {ENGINE_LABELS[selected_engine]}로 요약하는 중..."):
                                         try:
                                             doc = get_8k_filing_text(edgar_cik, accession_number)
                                             summary_text = summarize_8k_filing(
                                                 snapshot["name"], f["form"], f["filing_date"],
-                                                doc["text"], doc["truncated"],
+                                                doc["text"], doc["truncated"], engine=selected_engine,
                                             )
                                         except (EdgarDataError, EdgarSummaryError) as e:
-                                            st.session_state.sr_edgar_8k_summaries[accession_number] = {
+                                            st.session_state.sr_edgar_8k_summaries[summary_key] = {
                                                 "error": str(e)
                                             }
                                         else:
-                                            st.session_state.sr_edgar_8k_summaries[accession_number] = {
+                                            st.session_state.sr_edgar_8k_summaries[summary_key] = {
                                                 "summary": summary_text,
                                                 "truncated": doc["truncated"],
                                                 "used_exhibit": doc["used_exhibit"],
@@ -538,7 +571,7 @@ else:
                             elif "error" in stored_summary:
                                 st.error(f"요약 생성에 실패했습니다: {stored_summary['error']}")
                             else:
-                                st.markdown("**🤖 AI 생성 요약**")
+                                st.markdown(f"**🤖 AI 생성 요약 · {ENGINE_LABELS[selected_engine]}**")
                                 st.markdown(stored_summary["summary"])
                                 notes = []
                                 if stored_summary["used_exhibit"]:
@@ -951,14 +984,14 @@ else:
         # DCF 게이팅 로직이 나중에 바뀌면(예: 다른 FCF 소스 허용) 여기가 소리 없이 깨질 수 있다.
         st.info("yfinance 재무 데이터가 없어 AI 해설을 생성할 수 없습니다.")
     elif st.button("AI 해설 생성하기"):
-        with st.spinner("AI가 해설을 작성하고 있습니다..."):
+        with st.spinner(f"AI({ENGINE_LABELS[selected_engine]})가 해설을 작성하고 있습니다..."):
             try:
-                commentary = generate_commentary(snapshot, financial_history, dcf_result)
-                st.markdown(commentary)
+                commentary = generate_commentary(snapshot, financial_history, dcf_result, engine=selected_engine)
             except RuntimeError as e:
                 st.error(str(e))
-            except Exception as e:
-                st.error(f"AI 해설 생성 중 오류가 발생했습니다: {e}")
+            else:
+                st.markdown(f"**🤖 AI 생성 해설 · {ENGINE_LABELS[selected_engine]}**")
+                st.markdown(commentary)
 
     # 7. 요약 내보내기 (DCF가 정상 계산된 경우에만 이 지점에 도달)
     st.subheader("요약 내보내기")

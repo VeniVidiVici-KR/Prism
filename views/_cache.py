@@ -146,9 +146,17 @@ def get_8k_filing_text(cik: str, accession_number: str) -> dict:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def summarize_8k_filing(company_name: str, form: str, filing_date: str, text: str, truncated: bool) -> str:
-    """⚠️ 비용 통제 핵심 지점 — 이 함수가 실제 OpenAI 호출이다. text(원문 전체)까지 캐시 키에
-    포함되므로, 같은 공시(같은 원문)를 두 번 요청하면 API를 다시 부르지 않고 캐시된 요약을
-    그대로 반환한다. 버튼 클릭 시에만 호출되도록 하는 건 UI(views/stock_research.py) 쪽
-    책임이고, 이 캐싱은 그 위에 얹는 이중 방어(같은 세션 안 재실행·재클릭 시 재호출 방지)다."""
-    return _summarize_8k_filing(company_name, form, filing_date, text, truncated)
+def summarize_8k_filing(
+    company_name: str, form: str, filing_date: str, text: str, truncated: bool, engine: str | None = None
+) -> str:
+    """⚠️ 비용 통제 핵심 지점 — 이 함수가 실제 OpenAI 호환 API 호출이다. text(원문 전체)와
+    engine이 모두 캐시 키에 포함되므로, 같은 공시(같은 원문)를 같은 엔진으로 두 번 요청하면
+    API를 다시 부르지 않고 캐시된 요약을 그대로 반환한다.
+
+    ⚠️ engine을 캐시 키에서 빠뜨리면 학교 게이트웨이로 요약한 뒤 Gemini로 바꿔 같은 공시를
+    다시 요약해도 이전(학교) 결과가 그대로 반환되는 사고가 난다 — 반드시 인자로 받아 캐시
+    키에 자연히 포함되게 한다(별도 처리 불필요, st.cache_data는 함수 인자 전체를 키로 씀).
+
+    버튼 클릭 시에만 호출되도록 하는 건 UI(views/stock_research.py) 쪽 책임이고, 이 캐싱은
+    그 위에 얹는 이중 방어(같은 세션 안 재실행·재클릭 시 재호출 방지)다."""
+    return _summarize_8k_filing(company_name, form, filing_date, text, truncated, engine)

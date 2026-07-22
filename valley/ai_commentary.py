@@ -1,11 +1,10 @@
-"""계산된 재무/밸류에이션 결과를 OpenAI API로 자연어 해설한다."""
-
-import os
+"""계산된 재무/밸류에이션 결과를 OpenAI 호환 API로 자연어 해설한다."""
 
 import pandas as pd
-from openai import OpenAI
+from openai import RateLimitError
 
 from valley.formatting import format_money
+from valley.llm import get_llm_client
 
 SYSTEM_PROMPT = """당신은 개인 투자자를 위한 리서치 보조 도구입니다.
 아래에 주어진 재무 데이터와 DCF 밸류에이션 계산 결과를 바탕으로 한국어로 해설을 작성하세요.
@@ -55,24 +54,34 @@ def _build_user_prompt(snapshot: dict, financial_history: pd.DataFrame, dcf_resu
 """
 
 
-def generate_commentary(snapshot: dict, financial_history: pd.DataFrame, dcf_result: dict) -> str:
-    """OpenAI Chat Completions를 호출해 자연어 해설 문자열을 반환한다."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY가 설정되어 있지 않습니다. .env 파일을 확인하세요.")
+def generate_commentary(
+    snapshot: dict, financial_history: pd.DataFrame, dcf_result: dict, engine: str | None = None
+) -> str:
+    """OpenAI 호환 Chat Completions를 호출해 자연어 해설 문자열을 반환한다.
 
-    base_url = os.environ.get("OPENAI_BASE_URL") or None
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    Args:
+        engine: valley.llm의 ENGINE_SCHOOL|ENGINE_GEMINI. None(기본값)이면 기존과 동일하게
+            학교 게이트웨이를 쓴다(하위호환) — 호출부가 engine을 안 넘겨도 동작이 안 바뀐다.
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    Raises:
+        RuntimeError: API 키 미설정(LlmConfigError, RuntimeError의 하위클래스), 요청 한도
+            초과, 그 외 호출 실패.
+    """
+    client, model, engine_label = get_llm_client(engine)
     user_prompt = _build_user_prompt(snapshot, financial_history, dcf_result)
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.4,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.4,
+        )
+    except RateLimitError as e:
+        raise RuntimeError(f"{engine_label} API 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.") from e
+    except Exception as e:
+        raise RuntimeError(f"AI 해설 생성 중 오류가 발생했습니다: {e}") from e
+
     return response.choices[0].message.content
