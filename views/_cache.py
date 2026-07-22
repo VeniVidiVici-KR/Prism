@@ -18,9 +18,11 @@ from valley.data import resolve_ticker as _resolve_ticker
 from valley.dart import get_corp_code as _get_corp_code
 from valley.dart import get_dart_disclosure_list as _get_dart_disclosure_list
 from valley.dart import get_dart_financial_statements as _get_dart_financial_statements
+from valley.edgar import get_8k_filing_text as _get_8k_filing_text
 from valley.edgar import get_cik as _get_cik
 from valley.edgar import get_filings_by_type as _get_filings_by_type
 from valley.edgar import get_recent_filings as _get_recent_filings
+from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
@@ -134,3 +136,19 @@ def get_filings_by_type(cik: str, form_type: str, limit: int = 10) -> list[dict]
     """form_type이 캐시 키에 포함되어 유형별로 캐시가 분리된다(같은 CIK라도 10-K 조회와
     10-Q 조회는 별개로 캐시됨). ttl은 get_recent_filings와 동일하게 맞춘다."""
     return _get_filings_by_type(cik, form_type, limit)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_8k_filing_text(cik: str, accession_number: str) -> dict:
+    """이미 접수된 공시의 원문은 사실상 불변이라(DART 재무제표 캐싱과 같은 이유) ttl을
+    길게 잡는다. accession_number가 캐시 키에 포함돼 공시별로 분리된다."""
+    return _get_8k_filing_text(cik, accession_number)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def summarize_8k_filing(company_name: str, form: str, filing_date: str, text: str, truncated: bool) -> str:
+    """⚠️ 비용 통제 핵심 지점 — 이 함수가 실제 OpenAI 호출이다. text(원문 전체)까지 캐시 키에
+    포함되므로, 같은 공시(같은 원문)를 두 번 요청하면 API를 다시 부르지 않고 캐시된 요약을
+    그대로 반환한다. 버튼 클릭 시에만 호출되도록 하는 건 UI(views/stock_research.py) 쪽
+    책임이고, 이 캐싱은 그 위에 얹는 이중 방어(같은 세션 안 재실행·재클릭 시 재호출 방지)다."""
+    return _summarize_8k_filing(company_name, form, filing_date, text, truncated)

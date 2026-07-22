@@ -17,6 +17,7 @@ from valley.edgar import (
     categorize_form,
     describe_form_type,
 )
+from valley.edgar_summary import EdgarSummaryError
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
@@ -50,6 +51,8 @@ from views._cache import (
     get_recent_filings,
     get_price_history,
     get_quarterly_financial_history,
+    get_8k_filing_text,
+    summarize_8k_filing,
     get_roe_history,
     get_valuation_snapshot,
     resolve_ticker,
@@ -429,7 +432,7 @@ else:
             st.caption(f"최근 {disclosure_period} 이내 공시 {len(disclosures)}건 (최신순, 최대 30건 조회)")
 
 # 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용 파일럿.
-# ⚠️ 이번 라운드에서 유형 필터를 추가했다 — 본문 요약은 여전히 다음 라운드 범위 밖.
+# ⚠️ 이번 라운드에서 8-K 본문 AI 요약을 추가했다 — 10-K/10-Q 요약은 여전히 다음 라운드 범위.
 st.subheader("📄 최근 공시 (SEC EDGAR)")
 if currency == "KRW":
     st.info("한국 종목은 위 DART 공시를 이용하세요. SEC EDGAR는 미국 상장기업 전용입니다.")
@@ -475,6 +478,9 @@ else:
                     f for f in edgar_filings if categorize_form(f["form"]) in selected_categories
                 ]
 
+            if "sr_edgar_8k_summaries" not in st.session_state:
+                st.session_state.sr_edgar_8k_summaries = {}
+
             def _render_edgar_table(filings: list[dict]) -> None:
                 edgar_df = pd.DataFrame(
                     [
@@ -493,6 +499,54 @@ else:
                     hide_index=True,
                     column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
                 )
+
+                # 8-K 본문 AI 요약 — 이번 라운드는 8-K만(10-K/10-Q는 길이·비용 설계가 달라
+                # 다음 라운드). ⚠️ 비용 통제 핵심: 목록에 뜬다고 자동으로 요약하지 않는다 —
+                # 반드시 사용자가 건별로 "AI 요약 생성하기"를 눌러야만 호출된다(일괄 요약
+                # 버튼 없음). accession_number가 없는 필링(이론상 없어야 함)은 건너뛴다.
+                eight_k_filings = [f for f in filings if f["form"] == "8-K" and f.get("accession_number")]
+                if eight_k_filings:
+                    st.caption("🤖 8-K(수시공시) 본문 AI 요약 — 건별로 버튼을 눌러야 생성됩니다(자동/일괄 요약 없음).")
+                    for f in eight_k_filings:
+                        accession_number = f["accession_number"]
+                        with st.expander(f"{f['filing_date']} · 8-K 요약"):
+                            stored_summary = st.session_state.sr_edgar_8k_summaries.get(accession_number)
+                            if stored_summary is None:
+                                if st.button(
+                                    "AI 요약 생성하기", key=f"sr_edgar_8k_summarize_btn_{accession_number}"
+                                ):
+                                    with st.spinner("공시 원문을 가져와 요약하는 중..."):
+                                        try:
+                                            doc = get_8k_filing_text(edgar_cik, accession_number)
+                                            summary_text = summarize_8k_filing(
+                                                snapshot["name"], f["form"], f["filing_date"],
+                                                doc["text"], doc["truncated"],
+                                            )
+                                        except (EdgarDataError, EdgarSummaryError) as e:
+                                            st.session_state.sr_edgar_8k_summaries[accession_number] = {
+                                                "error": str(e)
+                                            }
+                                        else:
+                                            st.session_state.sr_edgar_8k_summaries[accession_number] = {
+                                                "summary": summary_text,
+                                                "truncated": doc["truncated"],
+                                                "used_exhibit": doc["used_exhibit"],
+                                            }
+                                    # 버튼 클릭 처리 직후엔 아직 이 run 안에서 else 분기(표시)가
+                                    # 실행되지 않으므로, 재실행해 방금 저장한 결과를 바로 보여준다.
+                                    st.rerun()
+                            elif "error" in stored_summary:
+                                st.error(f"요약 생성에 실패했습니다: {stored_summary['error']}")
+                            else:
+                                st.markdown("**🤖 AI 생성 요약**")
+                                st.markdown(stored_summary["summary"])
+                                notes = []
+                                if stored_summary["used_exhibit"]:
+                                    notes.append("첨부(EX-99.1) 포함")
+                                if stored_summary["truncated"]:
+                                    notes.append("⚠️ 문서가 길어 앞부분만 요약했습니다")
+                                if notes:
+                                    st.caption(" · ".join(notes))
 
             if not filtered_filings:
                 st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")
@@ -540,7 +594,7 @@ else:
                 st.caption(
                     f"{len(filtered_filings)}건 표시 (최근 {len(edgar_filings)}건 중 선택 유형 필터 적용, 최신순) · 출처: SEC EDGAR"
                 )
-            st.caption("본문 요약은 이 파일럿 범위 밖입니다 — 목록·유형 필터 확인 후 다음 라운드에서 추가 예정입니다.")
+            st.caption("8-K는 행별로 AI 요약을 볼 수 있습니다. 10-K/10-Q 본문 요약은 다음 라운드 범위입니다.")
 
 # 3-2. 투자자별 수급 (KRX/pykrx) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
 # 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인

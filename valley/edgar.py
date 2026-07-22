@@ -5,11 +5,13 @@
 """
 
 import json
+import re
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 
 # ⚠️ SEC EDGAR API는 User-Agent 헤더에 연락처가 없으면 요청을 막는다(실측 확인: User-Agent
 # 없이 호출 시 HTTP 403 "Request Rate Threshold Exceeded", 있으면 200 정상 응답). 아래 이메일은
@@ -23,6 +25,12 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _ARCHIVE_URL_TEMPLATE = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dash}/{primary_document}"
 _BROWSE_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
 _ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
+_FILING_INDEX_URL_TEMPLATE = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dash}/{accession_number}-index.htm"
+
+# 8-K 본문 요약 대상 텍스트 길이 가드. 실측 결과 8-K 자체는 짧지만(원문+EX-99.1 합쳐도 보통
+# 수천~2만자) 예외적으로 큰 첨부가 붙는 경우를 대비해 상한을 둔다 — 넘으면 앞부분만 쓰고
+# 잘렸다는 사실을 결과에 명시한다(숨기지 않는다).
+_FILING_TEXT_MAX_CHARS = 45000
 
 # 티커-CIK 매핑은 자주 안 바뀌므로 DART corp_code 캐시와 동일하게 로컬 파일로도 캐싱한다
 # (views/_cache.py의 st.cache_data는 프로세스 재시작 시 사라지므로 이중 방어).
@@ -167,7 +175,8 @@ def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
     묶어야 레코드 하나가 된다.
 
     Returns:
-        [{"form": "10-K", "filing_date": "2025-11-01", "description": "...", "url": "https://..."}, ...]
+        [{"form": "10-K", "filing_date": "2025-11-01", "description": "...", "url": "https://...",
+          "accession_number": "0000320193-25-000079"}, ...]
     """
     url = _SUBMISSIONS_URL.format(cik=cik)
     try:
@@ -187,7 +196,8 @@ def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
     count = min(limit, len(forms))
     filings = []
     for i in range(count):
-        accession_no_dash = accession_numbers[i].replace("-", "")
+        accession_number = accession_numbers[i]
+        accession_no_dash = accession_number.replace("-", "")
         primary_document = primary_documents[i]
         filings.append(
             {
@@ -197,6 +207,7 @@ def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
                 "url": _ARCHIVE_URL_TEMPLATE.format(
                     cik=cik, accession_no_dash=accession_no_dash, primary_document=primary_document
                 ),
+                "accession_number": accession_number,
             }
         )
     return filings
@@ -220,10 +231,12 @@ def get_filings_by_type(cik: str, form_type: str, limit: int = 10) -> list[dict]
     filing-href는 원문 문서 자체가 아니라 그 공시의 "색인 페이지"(index page) URL이다
     (get_recent_filings의 url은 원문 문서를 직접 가리키는 것과 다름 — browse-edgar 응답에는
     개별 원문 파일명이 없어 이 방식으로는 얻을 수 없다). 실제로 열리는 유효한 링크임을
-    실측으로 확인했다.
+    실측으로 확인했다. accession-number는 atom 응답에도 그대로 포함돼 있어(실측 확인)
+    get_8k_filing_text가 어느 목록에서 온 필링이든 동일하게 쓸 수 있다.
 
     Returns:
-        [{"form": "10-K", "filing_date": "2026-02-13", "description": "Annual report...", "url": "https://..."}, ...]
+        [{"form": "10-K", "filing_date": "2026-02-13", "description": "Annual report...", "url": "https://...",
+          "accession_number": "0001628280-26-008131"}, ...]
     """
     params = {
         "action": "getcompany",
@@ -250,12 +263,128 @@ def get_filings_by_type(cik: str, form_type: str, limit: int = 10) -> list[dict]
         filing_date = content.findtext("a:filing-date", default="", namespaces=_ATOM_NS)
         form_name = content.findtext("a:form-name", default="", namespaces=_ATOM_NS)
         filing_href = content.findtext("a:filing-href", default="", namespaces=_ATOM_NS)
+        accession_number = content.findtext("a:accession-number", default="", namespaces=_ATOM_NS)
         filings.append(
             {
                 "form": filing_type or form_type,
                 "filing_date": filing_date,
                 "description": form_name,
+                "accession_number": accession_number,
                 "url": filing_href,
             }
         )
     return filings
+
+
+def _html_to_text(content: bytes) -> str:
+    """HTML(바이트) 문서를 요약용 평문으로 변환한다. script/style 제거, 공백 정리.
+
+    ⚠️ 실측 확인: 최신 8-K는 Inline XBRL(iXBRL)로 제출돼 <div style="display:none"> 안에
+    체크박스 플래그·컨텍스트 태그 등이 잔뜩 숨어있다(예: AAPL 8-K에서 "true true true..."
+    같은 잡음이 본문 앞에 수백자 붙는 것 확인) — CSS로는 안 보이지만 BeautifulSoup의
+    get_text는 그대로 뽑아버려 요약 품질을 떨어뜨린다. display:none 요소를 먼저 제거하면
+    실질 본문(둘 다 "UNITED STATES SECURITIES AND EXCHANGE COMMISSION..."로 바로 시작)만
+    남는 것으로 실측 확인했다.
+
+    표는 완벽히 보존하지 않는다(요약이 목적이라 텍스트 흐름이 더 중요) — BeautifulSoup의
+    get_text가 셀 텍스트를 공백으로 이어붙이는 정도로 충분하다.
+    """
+    soup = BeautifulSoup(content, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    for tag in soup.find_all(style=lambda s: s and "display:none" in s.replace(" ", "")):
+        tag.decompose()
+    text = soup.get_text(separator=" ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _find_filing_document_url(cik: str, accession_number: str, doc_type: str) -> str | None:
+    """공시 색인 페이지(index.htm)의 "Document Format Files" 표에서 doc_type과 정확히 일치하는
+    문서의 절대 URL을 찾는다. 못 찾으면 None(호출부가 "없음"으로 처리하면 된다 — 모든 8-K가
+    첨부를 갖는 건 아니므로 정상 상황이다).
+
+    ⚠️ 파일명을 추측하지 않는다 — 실측 확인 결과 이 표의 "Type" 열에 "8-K"/"EX-99.1" 같은
+    값이 SEC가 직접 분류해 정확히 표기돼 있어, 그 값을 그대로 매칭한다(AAPL/MSFT 두 회사의
+    서로 다른 제출 도구가 만든 문서에서 동일 구조를 확인).
+    """
+    accession_no_dash = accession_number.replace("-", "")
+    index_url = _FILING_INDEX_URL_TEMPLATE.format(
+        cik=cik, accession_no_dash=accession_no_dash, accession_number=accession_number
+    )
+    try:
+        resp = requests.get(index_url, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception:
+        return None  # 색인 조회 실패는 치명적이지 않다 — 호출부가 없음으로 처리
+
+    soup = BeautifulSoup(resp.content, "html.parser")
+    table = soup.find("table", attrs={"class": "tableFile", "summary": "Document Format Files"})
+    if table is None:
+        return None
+
+    for row in table.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 4:
+            continue
+        if cells[3].get_text(strip=True) != doc_type:
+            continue
+        link = cells[2].find("a")
+        if link is None or not link.get("href"):
+            return None
+        href = link["href"]
+        if href.startswith("/ix?doc="):  # inline XBRL 뷰어 경유 링크 — 실제 문서 경로만 남긴다
+            href = href.split("/ix?doc=", 1)[1]
+        if not href.startswith("http"):
+            href = "https://www.sec.gov" + href
+        return href
+    return None
+
+
+def get_8k_filing_text(cik: str, accession_number: str, max_chars: int = _FILING_TEXT_MAX_CHARS) -> dict:
+    """8-K 공시의 요약용 원문 텍스트를 구성한다.
+
+    ⚠️ 실측(AAPL 2026-04-30 8-K, MSFT 8-K 2건) 결과:
+    - Item 2.02(실적 발표) 같은 8-K는 primary document가 "보도자료는 Exhibit 99.1 참조"라는
+      표지 한 장뿐이고(AAPL 케이스, 평문 약 4천자 중 실질 정보 없음), 진짜 내용은 EX-99.1
+      (보도자료) 첨부에 있다. 색인 페이지의 문서 표(Type 열)에 "EX-99.1"이 정확히 표기돼
+      있어 이걸로 찾아 함께 가져온다.
+    - Item 5.02(임원 변경) 같은 8-K는 첨부가 아예 없고 본문 자체가 실질 내용이다(MSFT 케이스).
+      이 경우 EX-99.1을 찾지 못하는 게 정상이며, 본문만으로 충분하다.
+    - 그래서 매번 EX-99.1 유무를 색인에서 실제로 확인하고, 있을 때만 이어붙인다 — 무조건
+      찾으려 하거나 무조건 본문만 쓰지 않는다.
+
+    Returns:
+        {"text": str, "truncated": bool, "used_exhibit": bool}
+
+    Raises:
+        EdgarDataError: primary document 자체를 가져오지 못했을 때(치명적 실패).
+    """
+    primary_url = _find_filing_document_url(cik, accession_number, "8-K")
+    if primary_url is None:
+        raise EdgarDataError("공시 색인에서 8-K 원문 문서를 찾지 못했습니다.")
+
+    try:
+        resp = requests.get(primary_url, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        raise EdgarDataError(f"8-K 원문을 가져오지 못했습니다: {e}") from e
+    primary_text = _html_to_text(resp.content)
+
+    combined_text = primary_text
+    used_exhibit = False
+    exhibit_url = _find_filing_document_url(cik, accession_number, "EX-99.1")
+    if exhibit_url:
+        try:
+            exhibit_resp = requests.get(exhibit_url, headers=_HEADERS, timeout=20)
+            exhibit_resp.raise_for_status()
+            exhibit_text = _html_to_text(exhibit_resp.content)
+            combined_text = primary_text + "\n\n[첨부 EX-99.1]\n" + exhibit_text
+            used_exhibit = True
+        except Exception:
+            pass  # 첨부 조회가 실패해도 본문만으로 계속 진행한다 (전체를 실패시키지 않음)
+
+    truncated = len(combined_text) > max_chars
+    if truncated:
+        combined_text = combined_text[:max_chars]
+
+    return {"text": combined_text, "truncated": truncated, "used_exhibit": used_exhibit}
