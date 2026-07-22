@@ -6,19 +6,23 @@
 
 import json
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import requests
 
 # ⚠️ SEC EDGAR API는 User-Agent 헤더에 연락처가 없으면 요청을 막는다(실측 확인: User-Agent
 # 없이 호출 시 HTTP 403 "Request Rate Threshold Exceeded", 있으면 200 정상 응답). 아래 이메일은
-# 플레이스홀더이니 실제 배포 시 연락 가능한 주소로 바꿀 것.
+# 플레이스홀더이니 실제 배포 시 연락 가능한 주소로 바꿀 것. browse-edgar(유형별 조회)도 동일
+# 규칙이 실측으로 확인됐다(User-Agent 없이 403).
 _USER_AGENT = "PRISM research app admin@example.com"
 _HEADERS = {"User-Agent": _USER_AGENT}
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _ARCHIVE_URL_TEMPLATE = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dash}/{primary_document}"
+_BROWSE_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
+_ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
 
 # 티커-CIK 매핑은 자주 안 바뀌므로 DART corp_code 캐시와 동일하게 로컬 파일로도 캐싱한다
 # (views/_cache.py의 st.cache_data는 프로세스 재시작 시 사라지므로 이중 방어).
@@ -72,6 +76,17 @@ def categorize_form(form: str) -> str:
         if form in forms:
             return category
     return OTHER_CATEGORY
+
+
+# "이 유형 직접 조회하기" 버튼용 — 범주 안의 form을 전부 개별 호출하면(예: "지분 변동"은 16종)
+# 호출이 과도해지므로, 카테고리를 대표하는 핵심 유형 1~2개만 골라 조회한다. "기타"는 범주
+# 자체가 잡다한 폴백이라 대표 유형을 고를 수 없어 제외한다.
+CATEGORY_PRIMARY_FORM_TYPES: dict[str, list[str]] = {
+    "실적·정기보고": ["10-K", "10-Q"],
+    "중요 사건": ["8-K"],
+    "지분 변동": ["4", "SC 13G"],
+    "주주총회·기타": ["DEF 14A", "424B2"],
+}
 
 
 class EdgarDataError(Exception):
@@ -182,6 +197,65 @@ def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
                 "url": _ARCHIVE_URL_TEMPLATE.format(
                     cik=cik, accession_no_dash=accession_no_dash, primary_document=primary_document
                 ),
+            }
+        )
+    return filings
+
+
+def get_filings_by_type(cik: str, form_type: str, limit: int = 10) -> list[dict]:
+    """특정 form type의 공시만 최신순으로 최대 limit건 직접 조회한다.
+
+    ⚠️ get_recent_filings("최근 N건에서 거르기")의 한계 때문에 만들었다 — JPM처럼 424B2
+    (구조화채권 발행서류) 발행량이 압도적인 종목은 실측 결과 최근 1000건 안에도 10-K/10-Q가
+    하나도 없을 수 있다(과거로 더 거슬러 올라가는 submissions API의 filings.files 방식도
+    검토했으나, JPM은 파일 하나(~2000건)에도 10-K가 0건이라 몇 개를 더 받아야 할지 알 수
+    없어 비실용적이었다 — 실측 후 기각). 대신 SEC의 browse-edgar 엔드포인트(type 파라미터로
+    서버 사이드에서 이미 걸러줌)를 쓴다 — 1회 호출로 원하는 유형만 정확히 받는다.
+
+    ⚠️ 응답은 Atom XML이고, 실측 확인 결과 <entry>의 자식 원소(filing-date/filing-type/
+    form-name/filing-href 등)까지 전부 Atom 네임스페이스(http://www.w3.org/2005/Atom)
+    안에 있어 네임스페이스 접두어 없이 찾으면 매칭되지 않는다 — 모든 탐색에 네임스페이스를
+    명시한다.
+
+    filing-href는 원문 문서 자체가 아니라 그 공시의 "색인 페이지"(index page) URL이다
+    (get_recent_filings의 url은 원문 문서를 직접 가리키는 것과 다름 — browse-edgar 응답에는
+    개별 원문 파일명이 없어 이 방식으로는 얻을 수 없다). 실제로 열리는 유효한 링크임을
+    실측으로 확인했다.
+
+    Returns:
+        [{"form": "10-K", "filing_date": "2026-02-13", "description": "Annual report...", "url": "https://..."}, ...]
+    """
+    params = {
+        "action": "getcompany",
+        "CIK": cik,
+        "type": form_type,
+        "dateb": "",
+        "owner": "include",
+        "count": limit,
+        "output": "atom",
+    }
+    try:
+        resp = requests.get(_BROWSE_URL, params=params, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        raise EdgarDataError(f"SEC EDGAR 유형별 공시 조회에 실패했습니다: {e}") from e
+
+    filings = []
+    for entry in root.findall("a:entry", _ATOM_NS):
+        content = entry.find("a:content", _ATOM_NS)
+        if content is None:
+            continue
+        filing_type = content.findtext("a:filing-type", default="", namespaces=_ATOM_NS)
+        filing_date = content.findtext("a:filing-date", default="", namespaces=_ATOM_NS)
+        form_name = content.findtext("a:form-name", default="", namespaces=_ATOM_NS)
+        filing_href = content.findtext("a:filing-href", default="", namespaces=_ATOM_NS)
+        filings.append(
+            {
+                "form": filing_type or form_type,
+                "filing_date": filing_date,
+                "description": form_name,
+                "url": filing_href,
             }
         )
     return filings

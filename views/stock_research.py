@@ -10,7 +10,13 @@ from dotenv import load_dotenv
 from valley.ai_commentary import generate_commentary
 from valley.dart import DartDataError
 from valley.data import TickerNotFoundError
-from valley.edgar import ALL_CATEGORIES, EdgarDataError, categorize_form, describe_form_type
+from valley.edgar import (
+    ALL_CATEGORIES,
+    CATEGORY_PRIMARY_FORM_TYPES,
+    EdgarDataError,
+    categorize_form,
+    describe_form_type,
+)
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.peers import ValuationDataError, build_valuation_table
@@ -33,6 +39,7 @@ from views._cache import (
     get_cik,
     get_dart_disclosure_list,
     get_dart_financial_statements,
+    get_filings_by_type,
     get_financial_history,
     get_free_cash_flow_history,
     get_historical_per_pbr,
@@ -468,9 +475,7 @@ else:
                     f for f in edgar_filings if categorize_form(f["form"]) in selected_categories
                 ]
 
-            if not filtered_filings:
-                st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")
-            else:
+            def _render_edgar_table(filings: list[dict]) -> None:
                 edgar_df = pd.DataFrame(
                     [
                         {
@@ -479,7 +484,7 @@ else:
                             "설명": f["description"] or "-",
                             "원문": f["url"],
                         }
-                        for f in filtered_filings
+                        for f in filings
                     ]
                 )
                 st.dataframe(
@@ -488,6 +493,50 @@ else:
                     hide_index=True,
                     column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
                 )
+
+            if not filtered_filings:
+                st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")
+
+                # ⚠️ "최근 N건에서 거르기"의 근본 한계(JPM처럼 424B2 발행량이 압도적인 종목은
+                # 100건, 심지어 1000건 안에도 10-K/10-Q가 없을 수 있음, 실측 확인)를 여기서
+                # 해결한다 — 매 로드마다 자동 조회하면 호출이 늘어나므로, 사용자가 필요할 때만
+                # 누르는 버튼으로 한정한다(평소엔 기존 흐름 그대로 빠르게).
+                direct_fetchable = [c for c in selected_categories if c in CATEGORY_PRIMARY_FORM_TYPES]
+                if direct_fetchable:
+                    if st.button("선택한 유형을 SEC에서 직접 조회하기", key="sr_edgar_direct_fetch_btn"):
+                        direct_results = []
+                        for cat in direct_fetchable:
+                            for form_type in CATEGORY_PRIMARY_FORM_TYPES[cat]:
+                                try:
+                                    direct_results.extend(get_filings_by_type(edgar_cik, form_type, limit=10))
+                                except EdgarDataError as e:
+                                    st.warning(f"{form_type} 직접 조회에 실패했습니다: {e}")
+                        direct_results.sort(key=lambda f: f["filing_date"], reverse=True)
+                        # 티커·범주 조합까지 함께 저장해, 다른 종목을 조회하거나 필터를 바꾸면
+                        # 이전 결과가 잘못 이어서 보이지 않도록 한다(다음 rerun에서 이 조합이
+                        # 안 맞으면 아래에서 자동으로 무시됨).
+                        st.session_state.sr_edgar_direct_results = {
+                            "ticker": resolved_ticker,
+                            "categories": tuple(sorted(direct_fetchable)),
+                            "filings": direct_results,
+                        }
+
+                    stored = st.session_state.get("sr_edgar_direct_results")
+                    if (
+                        stored
+                        and stored["ticker"] == resolved_ticker
+                        and stored["categories"] == tuple(sorted(direct_fetchable))
+                    ):
+                        if not stored["filings"]:
+                            st.info("직접 조회로도 해당 유형의 공시를 찾지 못했습니다.")
+                        else:
+                            _render_edgar_table(stored["filings"])
+                            st.caption(
+                                f"SEC 직접 조회 결과 {len(stored['filings'])}건 "
+                                f"(선택 유형별 최신 10건까지, 최신순) · 최근 N건 필터가 아닌 유형별 직접 조회"
+                            )
+            else:
+                _render_edgar_table(filtered_filings)
                 st.caption(
                     f"{len(filtered_filings)}건 표시 (최근 {len(edgar_filings)}건 중 선택 유형 필터 적용, 최신순) · 출처: SEC EDGAR"
                 )

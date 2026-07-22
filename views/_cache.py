@@ -19,6 +19,7 @@ from valley.dart import get_corp_code as _get_corp_code
 from valley.dart import get_dart_disclosure_list as _get_dart_disclosure_list
 from valley.dart import get_dart_financial_statements as _get_dart_financial_statements
 from valley.edgar import get_cik as _get_cik
+from valley.edgar import get_filings_by_type as _get_filings_by_type
 from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
@@ -126,3 +127,10 @@ def get_recent_filings(cik: str, limit: int = 30) -> list[dict]:
     """공시 목록은 신규 공시가 계속 생길 수 있어 티커-CIK 매핑보다 ttl을 짧게 잡는다
     (DART 공시 목록 캐싱과 동일한 기준)."""
     return _get_recent_filings(cik, limit)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_filings_by_type(cik: str, form_type: str, limit: int = 10) -> list[dict]:
+    """form_type이 캐시 키에 포함되어 유형별로 캐시가 분리된다(같은 CIK라도 10-K 조회와
+    10-Q 조회는 별개로 캐시됨). ttl은 get_recent_filings와 동일하게 맞춘다."""
+    return _get_filings_by_type(cik, form_type, limit)
