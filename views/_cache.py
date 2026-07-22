@@ -21,8 +21,10 @@ from valley.dart import get_dart_financial_statements as _get_dart_financial_sta
 from valley.edgar import get_8k_filing_text as _get_8k_filing_text
 from valley.edgar import get_cik as _get_cik
 from valley.edgar import get_filings_by_type as _get_filings_by_type
+from valley.edgar import get_mda_section_text as _get_mda_section_text
 from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
+from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
@@ -160,3 +162,21 @@ def summarize_8k_filing(
     버튼 클릭 시에만 호출되도록 하는 건 UI(views/stock_research.py) 쪽 책임이고, 이 캐싱은
     그 위에 얹는 이중 방어(같은 세션 안 재실행·재클릭 시 재호출 방지)다."""
     return _summarize_8k_filing(company_name, form, filing_date, text, truncated, engine)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_mda_section_text(cik: str, accession_number: str, form_type: str) -> dict:
+    """10-K/10-Q의 MD&A 섹션 추출(SEC 문서 조회 + 파싱)은 LLM 호출이 아니라 무료지만, 같은
+    원문을 반복 파싱하지 않도록 get_8k_filing_text와 동일한 기준(ttl 길게)으로 캐싱한다.
+    "요약 전 크기 확인" 흐름에서 추출 버튼을 다시 눌러도 재파싱하지 않는다."""
+    return _get_mda_section_text(cik, accession_number, form_type)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def summarize_mda_section(
+    company_name: str, form: str, filing_date: str, text: str, truncated: bool, engine: str | None = None
+) -> str:
+    """⚠️ 비용 통제 핵심 지점(10-K/10-Q용) — summarize_8k_filing과 동일한 이유로 text와 engine을
+    전부 캐시 키에 포함한다. MD&A 텍스트가 8-K보다 훨씬 커서(수만자) 캐시 히트의 가치가 더
+    크다 — 실수로 같은 문서를 재요약하면 8-K보다 몇 배 큰 비용이 든다."""
+    return _summarize_mda_section(company_name, form, filing_date, text, truncated, engine)

@@ -54,6 +54,8 @@ from views._cache import (
     get_quarterly_financial_history,
     get_8k_filing_text,
     summarize_8k_filing,
+    get_mda_section_text,
+    summarize_mda_section,
     get_roe_history,
     get_valuation_snapshot,
     resolve_ticker,
@@ -503,6 +505,13 @@ else:
 
             if "sr_edgar_8k_summaries" not in st.session_state:
                 st.session_state.sr_edgar_8k_summaries = {}
+            # 10-K/10-Q MD&A용 세션 키 — 8-K와 완전히 분리된 별도 딕셔너리(sr_ 접두어 준수).
+            # sr_edgar_mda_extracted: accession_number -> 추출된 MD&A 텍스트(엔진 무관, 무료).
+            # sr_edgar_mda_summaries: (accession_number, engine) -> 최종 요약(유료, 엔진별 분리).
+            if "sr_edgar_mda_extracted" not in st.session_state:
+                st.session_state.sr_edgar_mda_extracted = {}
+            if "sr_edgar_mda_summaries" not in st.session_state:
+                st.session_state.sr_edgar_mda_summaries = {}
 
             def _render_edgar_table(filings: list[dict]) -> None:
                 edgar_df = pd.DataFrame(
@@ -580,6 +589,97 @@ else:
                                     notes.append("⚠️ 문서가 길어 앞부분만 요약했습니다")
                                 if notes:
                                     st.caption(" · ".join(notes))
+
+                # 10-K/10-Q MD&A(경영진의 논의 및 분석) 요약 — 8-K와 별도 경로다. 문서
+                # 전체(수백 페이지)를 넣을 수 없어 MD&A 섹션만 추출하고, 8-K보다 비용이
+                # 훨씬 커서(실측: AAPL 10-K 1.8만자~MSFT 10-Q 5.8만자, 8-K 대비 3~10배 토큰)
+                # "추출 → 크기 확인 → 사용자가 진행 확정" 2단계로 나눈다(추출 자체는 SEC
+                # 문서 조회일 뿐 LLM 호출이 아니라 무료 — 크레딧은 진행 확정 후에만 든다).
+                # ⚠️ 10-K/A, 10-Q/A(정정본)는 지원하지 않는다 — 실측 결과 TSLA의 최근
+                # 10-K/A는 Part III(임원보수 등) 정정만 담아 Item 7(MD&A) 자체가 없었다.
+                mda_filings = [
+                    f for f in filings if f["form"] in ("10-K", "10-Q") and f.get("accession_number")
+                ]
+                if mda_filings:
+                    st.caption(
+                        f"🤖 10-K/10-Q MD&A(경영진의 논의 및 분석) AI 요약({ENGINE_LABELS[selected_engine]}) "
+                        "— 건별로 버튼을 눌러야 생성됩니다(자동/일괄 요약 없음). 문서가 커서 8-K보다 "
+                        "비용이 훨씬 큽니다."
+                    )
+                    for f in mda_filings:
+                        accession_number = f["accession_number"]
+                        form = f["form"]
+                        # 추출(무료, SEC 문서 조회일 뿐)은 엔진과 무관해 accession_number만으로
+                        # 캐시하고, 최종 요약(유료, LLM 호출)만 (accession_number, engine)로
+                        # 분리한다 — 8-K 세션 키(sr_edgar_8k_summaries)와도 완전히 별개 딕셔너리라
+                        # 서로 덮어쓸 일이 없다.
+                        mda_summary_key = (accession_number, selected_engine)
+                        with st.expander(f"{f['filing_date']} · {form} MD&A 요약"):
+                            stored_mda_summary = st.session_state.sr_edgar_mda_summaries.get(mda_summary_key)
+                            if stored_mda_summary is not None:
+                                if "error" in stored_mda_summary:
+                                    st.error(f"요약 생성에 실패했습니다: {stored_mda_summary['error']}")
+                                else:
+                                    st.markdown(f"**🤖 AI 생성 요약 · {ENGINE_LABELS[selected_engine]} · Item {'7' if form == '10-K' else '2'} MD&A 기준**")
+                                    st.markdown(stored_mda_summary["summary"])
+                                    if stored_mda_summary["truncated"]:
+                                        st.caption("⚠️ MD&A 섹션 자체가 길어 앞부분만 요약했습니다.")
+                            else:
+                                extracted = st.session_state.sr_edgar_mda_extracted.get(accession_number)
+                                if extracted is None:
+                                    if st.button(
+                                        "MD&A 추출 (크기 확인)",
+                                        key=f"sr_edgar_mda_extract_btn_{accession_number}",
+                                        help="아직 AI를 호출하지 않습니다 — SEC 원문에서 MD&A 섹션만 추출해 크기를 먼저 보여줍니다.",
+                                    ):
+                                        with st.spinner("MD&A 섹션을 추출하는 중..."):
+                                            try:
+                                                mda_doc = get_mda_section_text(edgar_cik, accession_number, form)
+                                            except EdgarDataError as e:
+                                                st.session_state.sr_edgar_mda_extracted[accession_number] = {
+                                                    "error": str(e)
+                                                }
+                                            else:
+                                                st.session_state.sr_edgar_mda_extracted[accession_number] = {
+                                                    "text": mda_doc["text"],
+                                                    "truncated": mda_doc["truncated"],
+                                                }
+                                        st.rerun()
+                                elif "error" in extracted:
+                                    st.error(f"MD&A 추출에 실패했습니다: {extracted['error']}")
+                                else:
+                                    char_count = len(extracted["text"])
+                                    approx_tokens = char_count // 4
+                                    st.info(
+                                        f"추출된 MD&A 약 {char_count:,}자(대략 {approx_tokens:,} 토큰 추정) — 요약하시겠습니까?"
+                                    )
+                                    if extracted["truncated"]:
+                                        st.caption("⚠️ MD&A 섹션 자체가 길어 앞부분만 추출했습니다.")
+                                    if selected_engine == ENGINE_SCHOOL:
+                                        st.caption(
+                                            "💡 긴 문서라 학교 게이트웨이 크레딧 소모가 큽니다. Gemini 엔진 "
+                                            "사용을 고려해보세요(사이드바에서 전환 — 자동으로 바뀌지는 않습니다)."
+                                        )
+                                    if st.button(
+                                        f"이 크기로 {ENGINE_LABELS[selected_engine]} 요약 진행",
+                                        key=f"sr_edgar_mda_summarize_btn_{accession_number}_{selected_engine}",
+                                    ):
+                                        with st.spinner(f"{ENGINE_LABELS[selected_engine]}로 MD&A를 요약하는 중..."):
+                                            try:
+                                                mda_summary_text = summarize_mda_section(
+                                                    snapshot["name"], form, f["filing_date"],
+                                                    extracted["text"], extracted["truncated"], engine=selected_engine,
+                                                )
+                                            except EdgarSummaryError as e:
+                                                st.session_state.sr_edgar_mda_summaries[mda_summary_key] = {
+                                                    "error": str(e)
+                                                }
+                                            else:
+                                                st.session_state.sr_edgar_mda_summaries[mda_summary_key] = {
+                                                    "summary": mda_summary_text,
+                                                    "truncated": extracted["truncated"],
+                                                }
+                                        st.rerun()
 
             if not filtered_filings:
                 st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")

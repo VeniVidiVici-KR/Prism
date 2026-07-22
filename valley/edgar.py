@@ -32,6 +32,32 @@ _FILING_INDEX_URL_TEMPLATE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc
 # 잘렸다는 사실을 결과에 명시한다(숨기지 않는다).
 _FILING_TEXT_MAX_CHARS = 45000
 
+# 10-K/10-Q MD&A(경영진의 논의 및 분석) 섹션 길이 가드. 실측 결과(AAPL 10-K 1.8만자, AAPL
+# 10-Q 2.2만자, MSFT 10-K 4.8만자, MSFT 10-Q 5.8만자) 대부분 9만자 이내라 이 값을 상한으로
+# 잡는다 — 넘으면 앞부분만 쓰고 잘렸다는 사실을 결과에 명시한다(8-K와 동일한 투명성 원칙).
+_MDA_TEXT_MAX_CHARS = 90000
+
+# 10-K/10-Q는 MD&A를 가리키는 Item 번호가 다르다(실측 확인) — 10-K는 Item 7(~7A 또는 8
+# 직전까지), 10-Q는 Part I Item 2(~3 또는 4 직전까지). form_type별로 반드시 분기해야 한다.
+# "end"를 우선 쓰고 못 찾으면 "end_fallback"으로 넘어간다(일부 문서는 7A를 8과 합쳐 쓰기도 함).
+_MDA_SECTION_SPECS: dict[str, dict[str, str]] = {
+    "10-K": {
+        "start": r"^Item\s+7\.?\s*Management",
+        "end": r"^Item\s+7A\.?\s*Quantitative",
+        "end_fallback": r"^Item\s+8\.?\s*Financial Statements",
+    },
+    "10-Q": {
+        "start": r"^Item\s+2\.?\s*Management",
+        "end": r"^Item\s+3\.?\s*Quantitative",
+        "end_fallback": r"^Item\s+4\.?\s*Controls",
+    },
+}
+
+# MD&A 추출 후 경계 바로 앞에 남는 페이지 머리말 잔재("PART II", "Item 7A" 단독, "Item 3, 4"
+# 처럼 여러 항목을 한 줄에 묶은 머리말, 페이지번호 숫자만 있는 줄 등 실측으로 확인된 흔한
+# 패턴)를 정리한다 — 실질 내용은 아니라 요약 품질에 영향은 적지만, 깔끔하게 잘라낸다.
+_MDA_NOISE_TAIL_PATTERN = re.compile(r"^(PART\s+[IVX]+|Item\s+\d+[A-Z]?(,\s*\d+[A-Z]?)*)$", re.IGNORECASE)
+
 # 티커-CIK 매핑은 자주 안 바뀌므로 DART corp_code 캐시와 동일하게 로컬 파일로도 캐싱한다
 # (views/_cache.py의 st.cache_data는 프로세스 재시작 시 사라지므로 이중 방어).
 _TICKER_CIK_CACHE_PATH = Path(__file__).resolve().parent.parent / ".edgar_ticker_cik_cache.json"
@@ -388,3 +414,102 @@ def get_8k_filing_text(cik: str, accession_number: str, max_chars: int = _FILING
         combined_text = combined_text[:max_chars]
 
     return {"text": combined_text, "truncated": truncated, "used_exhibit": used_exhibit}
+
+
+def _html_to_lines(content: bytes) -> list[str]:
+    """HTML을 줄(블록) 단위 텍스트 리스트로 변환한다.
+
+    get_8k_filing_text가 쓰는 _html_to_text와 달리 공백 하나로 뭉개지 않고 개행을 보존한다 —
+    MD&A 섹션 경계를 "그 줄에 항목번호와 제목이 함께 있는가"로 판별해야 하기 때문이다
+    (get_mda_section_text 참고).
+    """
+    soup = BeautifulSoup(content, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    for tag in soup.find_all(style=lambda s: s and "display:none" in s.replace(" ", "")):
+        tag.decompose()
+    text = soup.get_text(separator="\n")
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    lines = [ln.strip() for ln in text.split("\n")]
+    return [ln for ln in lines if ln]
+
+
+def get_mda_section_text(
+    cik: str, accession_number: str, form_type: str, max_chars: int = _MDA_TEXT_MAX_CHARS
+) -> dict:
+    """10-K/10-Q의 MD&A(경영진의 논의 및 분석, Item 7 또는 Item 2) 섹션만 추출한다.
+
+    ⚠️ 문서 전체(수백 페이지)를 요약에 넣으면 토큰·비용이 폭증하고 요약 품질도 떨어진다 —
+    MD&A만 뽑는다.
+
+    ⚠️ 목차(TOC) 오탐 방지(실측으로 확인한 함정): "Item 7"만으로 찾으면 문서 앞 목차의
+    "Item 7 ... 21"(페이지번호) 항목이 먼저 잡혀 목차 조각만 나온다. 실측 확인 결과 목차는
+    항목번호와 제목이 서로 다른 줄로 떨어져 있고("Item 7." 한 줄 + "Management's Discussion..."
+    다음 줄 + 페이지번호 또 다음 줄), 진짜 소제목(heading)은 항목번호 바로 뒤에 정식 제목이
+    같은 줄로 붙어 있다("Item 7.    Management's Discussion and Analysis..." 한 줄). 그래서
+    "항목번호 뒤에 정식 제목이 곧바로 이어지는 줄"만 진짜 소제목으로 인정한다 — AAPL(Workiva
+    템플릿)·MSFT(다른 제출대행사 템플릿) 둘 다 이 구조가 동일함을 실측으로 확인했다. 문서
+    본문 안의 교차 참조(예: "…재무제표는 Part II, Item 8 참조")는 정식 제목이 이어지지 않아
+    이 조건에 걸리지 않는다.
+
+    ⚠️ 10-K와 10-Q는 MD&A를 가리키는 Item 번호가 다르다(_MDA_SECTION_SPECS 참고, 실측 확인) —
+    form_type으로 반드시 분기한다. 지원하지 않는 form_type(10-K/A, 10-Q/A 등)은 EdgarDataError.
+    (실측: TSLA 10-K/A는 Part III만 담은 정정본이라 "Item 7" 자체가 아예 없었다 — 이런
+    이유로 이번 라운드는 정정본(/A)을 지원하지 않는다.)
+
+    Returns:
+        {"text": str, "truncated": bool}
+
+    Raises:
+        EdgarDataError: form_type 미지원, 원문 조회 실패, 또는 MD&A 시작/끝 소제목을 못 찾았을
+            때. ⚠️ 못 찾았을 때 전체 문서로 폴백하지 않는다 — 비용 폭증을 막기 위해 명확히
+            실패로 처리한다.
+    """
+    spec = _MDA_SECTION_SPECS.get(form_type)
+    if spec is None:
+        raise EdgarDataError(f"'{form_type}'은 MD&A 추출을 지원하지 않습니다 (10-K/10-Q만 지원).")
+
+    primary_url = _find_filing_document_url(cik, accession_number, form_type)
+    if primary_url is None:
+        raise EdgarDataError(f"공시 색인에서 {form_type} 원문 문서를 찾지 못했습니다.")
+
+    try:
+        resp = requests.get(primary_url, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        raise EdgarDataError(f"{form_type} 원문을 가져오지 못했습니다: {e}") from e
+
+    lines = _html_to_lines(resp.content)
+
+    start_idx = [i for i, ln in enumerate(lines) if re.match(spec["start"], ln, re.IGNORECASE)]
+    if not start_idx:
+        raise EdgarDataError(
+            "MD&A(경영진의 논의 및 분석) 섹션의 시작 부분을 찾지 못했습니다. 문서 구조가 예상과 달라 추출할 수 없습니다."
+        )
+
+    end_idx = [i for i, ln in enumerate(lines) if re.match(spec["end"], ln, re.IGNORECASE)]
+    if not end_idx:
+        end_idx = [i for i, ln in enumerate(lines) if re.match(spec["end_fallback"], ln, re.IGNORECASE)]
+    if not end_idx:
+        raise EdgarDataError(
+            "MD&A(경영진의 논의 및 분석) 섹션의 끝 부분을 찾지 못했습니다. 문서 구조가 예상과 달라 추출할 수 없습니다."
+        )
+
+    start = start_idx[-1]
+    end = end_idx[-1]
+    if end <= start:
+        raise EdgarDataError("MD&A 섹션 경계를 정상적으로 판별하지 못했습니다(시작이 끝보다 뒤에 있음).")
+
+    mda_lines = lines[start:end]
+    while mda_lines and (_MDA_NOISE_TAIL_PATTERN.match(mda_lines[-1]) or mda_lines[-1].isdigit()):
+        mda_lines.pop()
+
+    mda_text = "\n".join(mda_lines)
+    if not mda_text.strip():
+        raise EdgarDataError("추출된 MD&A 섹션이 비어 있습니다.")
+
+    truncated = len(mda_text) > max_chars
+    if truncated:
+        mda_text = mda_text[:max_chars]
+
+    return {"text": mda_text, "truncated": truncated}
