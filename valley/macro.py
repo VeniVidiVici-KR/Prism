@@ -34,6 +34,28 @@ INDICATORS = {
             {"key": "US_CORE_PCE", "label": "근원 PCE", "fred_id": "PCEPILFE"},
             {"key": "US_PPI", "label": "생산자물가지수(PPI)", "fred_id": "PPIACO"},
         ],
+        # ⚠️ SA/NSA 통일 원칙(실측 후 결정, 자세한 근거는 valley/macro.py 상단 대신 여기 남김):
+        # CPI 구성항목은 전부 원계열(NSA)로 통일했다. STEP 3의 "구성항목 한눈에 보기"가
+        # 전년동월대비(YoY)% 비교인데, 12개월 차분에서 계절성이 상쇄되는 NSA가 YoY 비교의
+        # 표준 관행이고(SA/NSA를 한 비교에 섞으면 예전 PER TTM/FY 혼재와 같은 문제가 난다),
+        # 실측 결과 BLS/FRED가 CPI 구성항목 전부에 대해 "CUUR"(원계열) 계열을 안정적으로
+        # 제공한다(CUSR=계절조정 대응 계열도 있지만 이번엔 안 씀). 위 "물가"의 기존
+        # US_CPI(CPIAUCSL, SA)는 그대로 두되, 구성항목과 나란히 비교할 수 있도록 원계열
+        # 헤드라인(US_CPI_NSA)을 이 카테고리에 별도로 추가했다 — 기존 지표는 손대지 않음.
+        # PCE 재화/서비스는 원계열(NSA) 버전을 FRED에서 찾지 못해(실측 시도 결과 확인 불가),
+        # 기존 PCE 헤드라인/근원(PCEPI/PCEPILFE)과 같은 계절조정(SA) 기준으로 통일해 그
+        # 계열 안에서만 일관되게 뒀다 — CPI 원계열 그룹과는 섞이지 않도록 라벨에 각각
+        # "(원계열)"/"(계절조정)"을 명시했고, STEP 3 비교표는 CPI 원계열 항목만 묶는다.
+        "물가 세부": [
+            {"key": "US_CPI_NSA", "label": "CPI 총지수 (원계열, 구성항목 비교 기준)", "fred_id": "CPIAUCNS"},
+            {"key": "US_CPI_SHELTER", "label": "주거비 (원계열)", "fred_id": "CUUR0000SAH1"},
+            {"key": "US_CPI_FOOD", "label": "식품 (원계열)", "fred_id": "CPIUFDNS"},
+            {"key": "US_CPI_ENERGY", "label": "에너지 (원계열)", "fred_id": "CPIENGNS"},
+            {"key": "US_CPI_CORE_GOODS", "label": "근원 상품 - 식품·에너지 제외 (원계열)", "fred_id": "CUUR0000SACL1E"},
+            {"key": "US_CPI_CORE_SERVICES", "label": "근원 서비스 - 에너지서비스 제외 (원계열)", "fred_id": "CUUR0000SASLE"},
+            {"key": "US_PCE_GOODS", "label": "PCE 재화 물가지수 (계절조정)", "fred_id": "DGDSRG3M086SBEA"},
+            {"key": "US_PCE_SERVICES", "label": "PCE 서비스 물가지수 (계절조정)", "fred_id": "DSERRG3M086SBEA"},
+        ],
         "금리": [
             {"key": "US_FEDFUNDS", "label": "연방기금금리(기준금리)", "fred_id": "FEDFUNDS"},
             {"key": "US_DGS10", "label": "10년 국채금리", "fred_id": "DGS10"},
@@ -72,6 +94,38 @@ INDICATORS = {
                 "label": "CPI (소비자물가지수)",
                 "fred_id": "KORCPIALLMINMEI",
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "0"},
+            },
+        ],
+        # ECOS 901Y009(소비자물가지수)의 하위 item_code를 StatisticItemList API로 실제
+        # 조회해 확정했다(추측 아님) — 12개 지출목적별 대분류(A~L, 알파벳 코드)와 그 하위
+        # 항목이 실제로 존재함을 확인. 과제에서 예시로 든 "식료품·주거수도광열·교통·외식"에
+        # 정확히 대응하는 항목만 골랐다: A(식료품 및 비주류음료), D(주택,수도,전기및연료),
+        # G(교통), K01(음식 서비스=외식). 전부 2026-06까지 갱신 확인, YoY도 상식적 범위
+        # (식료품 0~2%대, 주거·수도·전기 1.7%대, 교통 9~11%대, 외식 2.6%대). 한국 CPI는
+        # 원래 원계열(NSA) 기준으로 발표되므로(기존 KR_CPI와 동일 stat_code/item_code
+        # 체계) 위 미국 CPI 구성항목(NSA로 통일)과 조정 방식 문제 없이 나란히 비교 가능하다.
+        # ⚠️ ECOS 전용(FRED 대응 시리즈 없음) — ECOS_API_KEY 없으면 명확히 실패한다(경상수지/
+        # 가계신용과 동일 패턴, get_indicator_series가 자동으로 MacroDataError를 던짐).
+        "물가 세부": [
+            {
+                "key": "KR_CPI_FOOD",
+                "label": "식료품 및 비주류음료",
+                "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "A"},
+            },
+            {
+                "key": "KR_CPI_HOUSING",
+                "label": "주택,수도,전기 및 연료",
+                "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "D"},
+            },
+            {
+                "key": "KR_CPI_TRANSPORT",
+                "label": "교통",
+                "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "G"},
+            },
+            {
+                "key": "KR_CPI_DINING",
+                "label": "외식(음식 서비스)",
+                "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "K01"},
             },
         ],
         "금리": [

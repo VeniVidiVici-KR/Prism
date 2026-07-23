@@ -39,10 +39,21 @@ CROSS_COUNTRY_INDICATORS = [
 ]
 
 
+def yoy_percent(series: pd.Series, periods: int = 12) -> pd.Series:
+    """월별 시계열을 N개월 전 대비 변화율(%)로 변환한다 (기본 12=전년동월대비/YoY).
+
+    CPI 구성항목(주거비/식품/에너지 등)마다 별도 혼합지표를 등록하는 대신, 어떤 카탈로그
+    지표든 이 범용 함수 하나로 YoY 변환할 수 있게 한다(Macro Indicator 페이지의 "CPI
+    구성항목 한눈에 보기" 뷰가 이걸 재사용한다). 데이터가 periods개월보다 짧으면 빈
+    시리즈가 나올 수 있으니 호출부가 빈 결과를 처리해야 한다.
+    """
+    return (series.pct_change(periods) * 100).dropna()
+
+
 def _cpi_yoy(country: str) -> pd.Series:
     """CPI 지수를 전년동월대비 상승률(%)로 변환한다 (월별 데이터 기준 12개월 전 대비)."""
     cpi = get_indicator_series(f"{country}_CPI")
-    yoy = (cpi.pct_change(12) * 100).dropna()
+    yoy = yoy_percent(cpi)
     if yoy.empty:
         raise MacroDataError(f"{country} CPI 상승률을 계산할 만큼 데이터가 충분하지 않습니다.")
     return yoy
