@@ -26,6 +26,7 @@ from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
 from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
+from valley.peers import get_annual_dividend_history as _get_annual_dividend_history
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
 from valley.peers import get_roe_history as _get_roe_history
@@ -87,6 +88,11 @@ def get_historical_per_pbr(ticker: str, years: int = 5):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_roe_history(ticker: str, years: int = 3):
     return _get_roe_history(ticker, years)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_annual_dividend_history(ticker: str, years: int = 5):
+    return _get_annual_dividend_history(ticker, years)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

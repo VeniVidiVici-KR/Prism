@@ -1,5 +1,7 @@
 """Peer Group 비교 및 PER/PBR 밸류에이션 밴드 조회 레이어."""
 
+from datetime import date
+
 import pandas as pd
 import requests
 import yfinance as yf
@@ -296,3 +298,31 @@ def build_valuation_table(rows: list[dict]) -> pd.DataFrame:
             "roe": "ROE",
         }
     )[["티커", "종목명", "현재가", "PER", "Fwd PER", "PBR", "배당수익률", "배당성향", "ROE", "시가총액"]]
+
+
+def get_annual_dividend_history(ticker: str, years: int = 5) -> pd.Series:
+    """연도별 배당 합계(연간 DPS) 시계열을 반환한다 (완결된 연도만, 오름차순).
+
+    ⚠️ 분기배당 기업은 연 4회 지급되므로(_dividend_per_share의 "최근 4회 합" 근사와 달리)
+    지급일 기준으로 연도별 합계를 내야 정확한 "연간 DPS"가 된다.
+
+    ⚠️ 진행 중인 올해(조회 시점의 달력 연도)는 실측 확인 결과 아직 예정된 지급이 다 끝나지
+    않은 상태다(예: 105560.KS는 이 조회 시점 기준 2026년 들어 2회만 지급됨, JPM도 마찬가지로
+    4회 중 일부만 지급된 상태) — 그대로 합산하면 실제 연간 배당보다 낮게 나와 D0(최근 연간
+    DPS)와 배당 CAGR을 왜곡한다. 그래서 올해는 완결된 해가 아니므로 제외하고, 가장 최근
+    "완결된" 연도까지만 남긴다.
+    """
+    t = yf.Ticker(ticker)
+    dividends = t.dividends
+    if dividends is None or dividends.empty:
+        raise ValuationDataError(f"'{ticker}'의 배당 이력을 찾을 수 없습니다 (무배당 종목일 수 있습니다).")
+
+    annual = dividends.groupby(dividends.index.year).sum()
+    current_year = date.today().year
+    annual = annual[annual.index < current_year]
+    if annual.empty:
+        raise ValuationDataError(f"'{ticker}'의 완결된 연도 배당 이력이 없습니다.")
+
+    annual = annual.tail(years)
+    annual.index = [str(y) for y in annual.index]
+    return annual

@@ -1,11 +1,21 @@
 """yfinance를 감싸는 데이터 조회 레이어. UI(app.py)는 이 모듈의 함수만 호출한다."""
 
+import re
+
 import pandas as pd
 import yfinance as yf
 
 
 class TickerNotFoundError(Exception):
     """존재하지 않거나 데이터가 없는 티커를 조회했을 때 발생."""
+
+
+# ⚠️ 클래스 주식(BRK.B, BF.B 등)은 yfinance가 점(.)이 아니라 하이픈(-) 표기를 쓴다(실측 확인:
+# BRK-B는 정상 조회되지만 BRK.B는 이름/가격 없이 실패하고, BF.B는 엉뚱한 MUTUALFUND로 오매칭
+# 됨 — BF-B가 진짜 Brown-Forman 주식). "영문자만으로 된 앞부분 + 점 + 영문자 한 글자"만 좁게
+# 매칭해 하이픈으로 바꾼다 — .KS/.KQ처럼 점 뒤가 두 글자 이상인 한국 종목 접미사나, 앞부분에
+# 숫자가 섞인 입력(예: "005930.KS")은 이 정규식에 아예 매칭되지 않아 절대 안 건드린다.
+_CLASS_SHARE_PATTERN = re.compile(r"^([A-Z]+)\.([A-Z])$")
 
 
 def find_row(df: pd.DataFrame, candidates: list[str]) -> pd.Series | None:
@@ -30,6 +40,10 @@ def resolve_ticker(user_input: str) -> str:
             if (info.get("longName") or info.get("shortName")) and info.get("quoteType") == "EQUITY":
                 return candidate
         raise TickerNotFoundError(f"'{code}' 종목코드를 KOSPI/KOSDAQ에서 찾을 수 없습니다.")
+
+    match = _CLASS_SHARE_PATTERN.match(code)
+    if match:
+        code = f"{match.group(1)}-{match.group(2)}"
     return code
 
 

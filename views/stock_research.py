@@ -27,7 +27,9 @@ from valley.supply import SupplyDataError, summarize_net_trading
 from valley.valuation import (
     CoeSuggestionUnavailableError,
     ImpliedGrowthNotFoundError,
+    dividend_growth_history,
     fcf_growth_history,
+    gordon_ddm,
     implied_growth_rate,
     justified_pbr,
     sensitivity_grid,
@@ -57,6 +59,7 @@ from views._cache import (
     get_mda_section_text,
     summarize_mda_section,
     get_roe_history,
+    get_annual_dividend_history,
     get_valuation_snapshot,
     resolve_ticker,
 )
@@ -66,9 +69,32 @@ PRICE_PERIOD_LABELS = {
     "1y": "1년", "3y": "3년", "5y": "5년", "max": "전체",
 }
 
-# 실측(JPM/BAC/KB금융/신한지주) 기준 yfinance의 금융업 섹터 문자열. 은행뿐 아니라 보험 등도
-# 같은 섹터로 묶여 있어, 이 값과 일치하면 "제조업 FCF 기반 DCF는 부적합할 수 있다" 경고를 띄운다.
-FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+# ⚠️ sector 단위("Financial Services")는 너무 거칠다 — 실측 확인 결과 은행(JPM/BAC/KB금융/
+# 신한지주)·보험(삼성화재/삼성생명)뿐 아니라 결제 네트워크(V/MA, industry="Credit Services")
+# 까지 같은 섹터로 묶여 있었다. V/MA는 자산이 가벼운 수수료 기반 사업이라 P/B×ROE·DDM이
+# 부적합하고, 오히려 FCF가 튼튼해 DCF가 잘 맞는데 sector 기준으로는 "DCF 부적합" 경고까지
+# 잘못 붙는 정반대 상황이었다. industry 단위로 좁혀 이 두 오류를 한 번에 고친다.
+#
+# 실측 industry 문자열: JPM/BAC="Banks - Diversified", KB금융/신한지주="Banks - Regional",
+# 삼성화재="Insurance - Property & Casualty", 삼성생명="Insurance - Life", V/MA="Credit
+# Services"(제외), AAPL/삼성전자="Consumer Electronics"(제외, sector도 Technology).
+# "Banks - "/"Insurance - "(하이픈 구분 하위분류) 접두어만 좁게 매칭한다 — 예를 들어
+# "Insurance Brokers"(수수료 기반 보험중개, 대차대조표가 가벼움)는 이 형식이 아니라서
+# 자연히 제외된다(실측 대상엔 없었지만 사업모형이 언더라이팅 보험사와 달라 의도적으로 뺌).
+_FINANCIAL_INDUSTRY_PREFIXES = ("Banks - ", "Insurance - ")
+
+
+def _is_financial_industry(industry: str | None) -> bool:
+    """industry가 은행·보험 계열인지 판별한다.
+
+    industry가 없거나("N/A" 포함, build_snapshot의 기본값) 비어있으면 비금융으로 간주한다 —
+    데이터가 없다고 sector 기준으로 되돌아가면 이번에 고치려는 오탐(V/MA류)이 되살아날 수 있고,
+    잘못된 P/B×ROE/DDM 노출·잘못된 DCF 경고보다는 그냥 일반 DCF로 처리하는 쪽이 안전하다
+    (어떤 종목이든 일반 DCF 경로는 항상 유효해 이 기본값이 앱을 죽이지 않는다).
+    """
+    if not industry or industry == "N/A":
+        return False
+    return industry.startswith(_FINANCIAL_INDUSTRY_PREFIXES)
 
 load_dotenv(override=True)
 
@@ -812,7 +838,7 @@ st.caption(
     "직접 산출합니다. 다만 이 FCF는 순차입/상환 효과를 반영하지 않은 근사치라, 앞으로 대규모 "
     "차입이나 상환을 계획한 기업일수록 오차가 커질 수 있습니다."
 )
-if snapshot.get("sector") in FINANCIAL_SECTORS:
+if _is_financial_industry(snapshot.get("industry")):
     # 계산 자체를 막지는 않는다 — FCF 데이터가 있으면 아래 수치는 그대로 보여주되, "계산되니
     # 맞는 값"이라는 착각을 막기 위해 경고만 명확히 띄운다.
     st.warning(
@@ -884,6 +910,88 @@ if snapshot.get("sector") in FINANCIAL_SECTORS:
         "성장률은 반영하지 않았습니다. 일회성 손익(충당금·자산매각 등)으로 ROE가 변동하면 결과가 "
         "왜곡될 수 있으니, 단년·3개년 평균 ROE를 함께 보고 참고용으로만 활용하세요."
     )
+
+    # 💰 DDM(배당할인모형) — P/B×ROE와 나란히 제공하는 은행·보험 밸류에이션의 또 다른 축.
+    # ⚠️ COE는 위 DCF·P/B×ROE와 같은 discount_rate(사이드바 값)를 그대로 재사용한다 — 같은
+    # 종목에서 세 밸류에이션의 COE가 다르면 혼란스럽다.
+    st.subheader("💰 DDM (배당할인모형)")
+    st.caption(
+        "은행·보험의 또 다른 축 밸류에이션입니다. 주당가치 = D1 / (COE − g), D1 = D0 × (1 + g) — "
+        "배당이 매년 g로 영구히 성장한다는 가정(Gordon Growth)에 기반합니다."
+    )
+    try:
+        bank_dividend_history = get_annual_dividend_history(resolved_ticker, years=5)
+    except ValuationDataError as e:
+        st.info(f"배당이 없어 DDM을 적용할 수 없습니다: {e}")
+    else:
+        bank_dividend_growth = dividend_growth_history(bank_dividend_history)
+        bank_d0 = float(bank_dividend_history.iloc[-1])
+
+        dd1, dd2, dd3 = st.columns(3)
+        dd1.metric("최근 연간 DPS (D0)", format_money(bank_d0, currency))
+        dd2.metric(
+            f"과거 {len(bank_dividend_history)}개년 배당 CAGR",
+            format_percent(bank_dividend_growth["cagr"]) if bank_dividend_growth["cagr"] is not None else "계산 불가",
+        )
+        dd3.metric("요구수익률 (COE)", f"{discount_rate * 100:.1f}%")
+
+        if bank_dividend_growth["cagr"] is None:
+            st.caption(f"⚠️ 배당 CAGR 계산 불가: {bank_dividend_growth['cagr_reason']}")
+        if bank_dividend_growth["has_non_positive_year"]:
+            st.caption("⚠️ 조회 기간 중 배당이 0 이하(무배당)인 연도가 있습니다 — 아래 표에서 확인하세요.")
+
+        st.caption(f"단위: {currency} (완결된 연도만 — 진행 중인 올해는 제외)")
+        dividend_table_df = pd.DataFrame(
+            [
+                {
+                    "연도": item["year"],
+                    "DPS": format_money(item["dps"], currency),
+                    "전년比 증가율": f"{item['yoy'] * 100:+.1f}%" if item["yoy"] is not None else item["yoy_reason"],
+                }
+                for item in bank_dividend_growth["yearly"]
+            ]
+        ).set_index("연도")
+        st.dataframe(dividend_table_df, width="stretch")
+
+        # ⚠️ 슬라이더 상한을 COE 미만으로 제한해 발산(g≥COE)을 구조적으로 방지한다(DCF의
+        # 영구성장률 슬라이더와 같은 정신) — gordon_ddm 내부 가드는 이중 방어.
+        ddm_max_growth = discount_rate - 0.005
+        if ddm_max_growth <= 0:
+            st.warning("요구수익률(COE)이 너무 낮아 배당성장률을 설정할 수 없습니다. 사이드바에서 COE를 높여주세요.")
+        else:
+            if "sr_ddm_growth_rate" not in st.session_state:
+                cagr_anchor = bank_dividend_growth["cagr"]
+                if cagr_anchor is not None and 0 < cagr_anchor < ddm_max_growth:
+                    st.session_state.sr_ddm_growth_rate = cagr_anchor
+                else:
+                    st.session_state.sr_ddm_growth_rate = min(0.03, ddm_max_growth)
+            else:
+                # COE가 바뀌어 상한이 낮아졌을 수 있다 — Streamlit 슬라이더는 저장된 값이 새
+                # min/max 범위를 벗어나면 예외를 던지므로 렌더링 전에 미리 clamp한다.
+                st.session_state.sr_ddm_growth_rate = max(
+                    0.0, min(st.session_state.sr_ddm_growth_rate, ddm_max_growth)
+                )
+            ddm_growth_rate = st.slider(
+                "배당성장률 (g) — 과거 CAGR을 참고해 조정하세요",
+                0.0, ddm_max_growth, step=0.005, format="%.3f", key="sr_ddm_growth_rate",
+                help=f"요구수익률(COE) {discount_rate * 100:.1f}%를 넘으면 DDM이 발산해, 슬라이더 상한을 그 아래로 제한했습니다.",
+            )
+            try:
+                ddm_value = gordon_ddm(bank_d0, ddm_growth_rate, discount_rate)
+            except ValueError as e:
+                st.warning(str(e))
+            else:
+                ddm_gap = (ddm_value - snapshot["price"]) / snapshot["price"]
+                dv1, dv2, dv3 = st.columns(3)
+                dv1.metric("DDM 주당가치", format_money(ddm_value, currency))
+                dv2.metric("현재 주가", format_money(snapshot["price"], currency))
+                dv3.metric("DDM 괴리율", f"{ddm_gap * 100:+.1f}%")
+
+        st.caption(
+            "⚠️ 한계: DDM은 배당이 g로 영구히 성장한다는 가정에 기반합니다. 배당 정책이 바뀌거나 "
+            "g가 COE에 가까우면 결과가 크게 변동합니다. 위 배당 CAGR·연도별 표를 함께 보고 "
+            "참고용으로만 활용하세요."
+        )
 
 if fcf_excluded_years:
     st.caption(f"3개년 평균 계산 시 FCF가 음수인 {fcf_excluded_years}개 연도는 제외했습니다.")

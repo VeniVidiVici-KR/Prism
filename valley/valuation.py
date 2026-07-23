@@ -314,6 +314,84 @@ def justified_pbr(roe: float, coe: float) -> float:
     return roe / coe
 
 
+def gordon_ddm(dps: float, growth_rate: float, coe: float) -> float:
+    """Gordon Growth 배당할인모형으로 주당가치를 계산한다.
+
+    주당가치 = D1 / (COE − g), D1 = D0 × (1 + g). 은행·보험의 또 다른 축 밸류에이션(P/B×ROE와
+    나란히 제공) — 배당이 매년 g로 영구히 성장한다는 가정에 기반한다.
+
+    ⚠️ 발산 가드: g가 COE 이상이면 분모(COE−g)가 0 이하가 되어 가치가 무한대/음수로 튄다 —
+    simplified_dcf의 영구성장률(terminal_growth)과 정확히 같은 문제라 동일하게 명확히
+    실패시킨다(억지로 숫자를 만들지 않는다).
+
+    Raises:
+        ValueError: COE가 0 이하, DPS가 0 이하(무배당), 또는 g가 COE 이상일 때.
+    """
+    if coe <= 0:
+        raise ValueError("요구수익률(COE)이 0 이하라 DDM을 계산할 수 없습니다.")
+    if dps is None or dps <= 0:
+        raise ValueError("배당이 없어(DPS 0 이하) DDM을 적용할 수 없습니다.")
+    if growth_rate >= coe:
+        raise ValueError("배당성장률이 요구수익률(COE) 이상이라 DDM 계산이 발산합니다. 성장률을 낮춰주세요.")
+    d1 = dps * (1 + growth_rate)
+    return d1 / (coe - growth_rate)
+
+
+def dividend_growth_history(dividend_series: pd.Series) -> dict:
+    """연도별 배당(DPS) 시계열(get_annual_dividend_history 결과, 연도 오름차순)로부터 연도별
+    전년대비 증가율(YoY)과 연평균 증가율(CAGR)을 계산한다.
+
+    ⚠️ fcf_growth_history와 같은 원칙을 배당에 적용한다 — 배당 삭감·중단(0으로 떨어짐)이나
+    특별배당(일회성 급증)이 섞이면 증가율이 왜곡되거나 무의미해진다:
+    - YoY는 "전년 배당이 0 이하"면 계산하지 않고 사유를 남긴다.
+    - CAGR은 시작·종료 연도 배당이 "둘 다 양수"여야 계산하고, 아니면 사유를 남긴다(단순
+      연평균은 튀는 값에 취약해 쓰지 않는다 — CAGR만).
+    - 시계열 안에 0 이하인 연도가 하나라도 있으면 has_non_positive_year로 알린다 — 호출부가
+      연도별 배당 표를 함께 보여줘 사용자가 이상치(삭감·특별배당)를 눈으로 확인하게 한다.
+
+    Returns:
+        {
+            "yearly": [{"year": str, "dps": float, "yoy": float | None, "yoy_reason": str | None}, ...],
+            "cagr": float | None,
+            "cagr_reason": str | None,
+            "has_non_positive_year": bool,
+        }
+    """
+    years_list = list(dividend_series.index)
+    values = [float(v) for v in dividend_series.values]
+
+    yearly = []
+    for i, (year, dps) in enumerate(zip(years_list, values)):
+        if i == 0:
+            yoy, yoy_reason = None, "첫 연도(비교 대상 없음)"
+        else:
+            prev = values[i - 1]
+            if prev <= 0:
+                yoy, yoy_reason = None, "계산 불가(전년 배당≤0)"
+            else:
+                yoy, yoy_reason = (dps - prev) / prev, None
+        yearly.append({"year": year, "dps": dps, "yoy": yoy, "yoy_reason": yoy_reason})
+
+    has_non_positive_year = any(v <= 0 for v in values)
+
+    if len(values) < 2:
+        cagr, cagr_reason = None, "데이터가 2개년 미만이라 계산 불가"
+    else:
+        start, end = values[0], values[-1]
+        if start <= 0 or end <= 0:
+            cagr, cagr_reason = None, "계산 불가(시작/종료 배당이 0 이하)"
+        else:
+            periods = len(values) - 1
+            cagr, cagr_reason = (end / start) ** (1 / periods) - 1, None
+
+    return {
+        "yearly": yearly,
+        "cagr": cagr,
+        "cagr_reason": cagr_reason,
+        "has_non_positive_year": has_non_positive_year,
+    }
+
+
 def fcf_growth_history(fcf_series: pd.Series) -> dict:
     """연도별 FCF 시계열(get_free_cash_flow_history 결과, 연도 오름차순)로부터 연도별
     전년대비 증가율(YoY)과 연평균 증가율(CAGR)을 계산한다.
