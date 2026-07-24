@@ -18,6 +18,39 @@ ECOS_URL = (
     "https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/5000/"
     "{stat_code}/{cycle}/{start}/{end}/{item_code}"
 )
+ECOS_ITEM_LIST_URL = "https://ecos.bok.or.kr/api/StatisticItemList/{api_key}/json/kr/1/{count}/{stat_code}"
+BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+
+# ⚠️ "CPI 구성 비중 & 기여도" 뷰 전용 — 기존 INDICATORS 카탈로그(개별 지표 버튼 조회용)와는
+# 별도로 관리한다. 배타적이고 망라적인(mutually exclusive & exhaustive) 항목 집합이어야 하는데,
+# 기존 카탈로그는 층위가 섞여 있어(예: 미국 주거비는 근원서비스의 하위, 한국 K01 외식은 K
+# 음식·숙박의 하위) 그대로 못 쓴다 — valley/macro.py 상단 주석/각 항목 주석 참고.
+
+# 미국: Food + Energy + Core goods + Core services = All items(정확히 100%가 되는 BLS의 표준
+# 4분할 정의). BLS의 relative importance(상대중요도) 메타데이터는 등록키 없이는 API가 막혀
+# 있고(catalog=true 요청 시 "catalog has been disabled" 실측 확인) HTML/원본파일 서버도 봇
+# 정책상 전부 403이라(우회 시도 대신 정책 존중), get_bls_relative_importance()가 BLS_API_KEY로
+# 직접 조회한다 — flat 파일(download.bls.gov)도 실측 시도했으나 동일하게 403이라 API 경로만
+# 유일하게 동작함을 확인했다. 아래 딕셔너리는 FRED 카탈로그 key -> BLS 원본 series ID
+# 매핑이다 — FRED가 쓰는 별칭(CPIUFDNS/CPIENGNS/CPIAUCNS)과 BLS 원본 ID
+# (CUUR0000SAF1/CUUR0000SA0E/CUUR0000SA0)가 달라서 혼동하기 쉽다. api.bls.gov를 직접 조회해
+# 같은 월(2026-06)의 지수값이 소수점까지 정확히 일치함을 실측 대조 확인했다(349.731=349.731,
+# 328.95=328.950, 333.952=333.952) — 값 대조까지 마친 매핑이다. ⚠️ FRED에 있는
+# "RIW..."(Relative Importance Weights) 시리즈는 연준 G.17 산업생산지수 가중치이지 CPI
+# 가중치가 아니라서 이름이 비슷해도 절대 쓰지 않는다.
+US_CPI_COMPONENT_BLS_IDS = {
+    "US_CPI_NSA": "CUUR0000SA0",
+    "US_CPI_FOOD": "CUUR0000SAF1",
+    "US_CPI_ENERGY": "CUUR0000SA0E",
+    "US_CPI_CORE_GOODS": "CUUR0000SACL1E",
+    "US_CPI_CORE_SERVICES": "CUUR0000SASLE",
+}
+
+# 한국: ECOS StatisticItemList가 901Y009(소비자물가지수)의 지출목적별 12개 대분류(A~L)
+# 가중치(WEIGHT 필드)를 실측으로 직접 제공한다(실측: item_code "0"의 WEIGHT="1000" — 1000분비
+# 기준, 12개 대분류 WEIGHT 합계 = 1000.0 정확히 일치 확인). K01(외식)은 K(음식·숙박)의 하위
+# 중분류라 이 배타적 집합에서 제외한다(기존 "물가 세부" 카탈로그엔 그대로 남겨둠).
+KR_CPI_MAJOR_ITEM_CODES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
 
 
 class MacroDataError(Exception):
@@ -300,6 +333,98 @@ def get_ecos_series(stat_code: str, cycle: str, item_code: str) -> pd.Series:
     if series.empty:
         raise MacroDataError(f"ECOS 시리즈 '{stat_code}/{item_code}'에 유효한 데이터가 없습니다.")
     return series
+
+
+def get_ecos_item_weights(stat_code: str) -> dict[str, tuple[str, float]]:
+    """ECOS StatisticItemList에서 최상위(대분류, P_ITEM_CODE=="0") 항목들의 실제 가중치를
+    실측으로 가져온다 (지수에서 가중치를 역산하는 게 아니라 ECOS가 메타데이터로 직접 제공하는
+    WEIGHT 필드를 그대로 쓴다). 반환값은 {item_code: (item_name, weight_permille)} — WEIGHT는
+    1000분비 기준이다(item_code "0"의 WEIGHT="1000"으로 실측 확인). 100 기준 %로 쓰려면
+    호출부가 /10 해야 한다.
+    """
+    api_key = os.environ.get("ECOS_API_KEY")
+    if not api_key:
+        raise MacroDataError("ECOS_API_KEY가 설정되어 있지 않습니다. .env 파일을 확인하세요.")
+
+    url = ECOS_ITEM_LIST_URL.format(api_key=api_key, count=1800, stat_code=stat_code)
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        raise MacroDataError(f"ECOS 품목 메타데이터 조회 중 오류가 발생했습니다: {e}") from e
+
+    result = payload.get("StatisticItemList")
+    if not result or "row" not in result:
+        error_msg = payload.get("RESULT", {}).get("MESSAGE", "알 수 없는 오류")
+        raise MacroDataError(f"ECOS 품목 메타데이터 응답에 데이터가 없습니다: {error_msg}")
+
+    weights: dict[str, tuple[str, float]] = {}
+    for row in result["row"]:
+        if row.get("P_ITEM_CODE") == "0" and row.get("CYCLE") == "M" and row.get("ITEM_CODE") not in weights:
+            try:
+                weights[row["ITEM_CODE"]] = (row["ITEM_NAME"], float(row["WEIGHT"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+
+    if not weights:
+        raise MacroDataError(f"ECOS 통계표 '{stat_code}'에서 대분류 가중치를 찾지 못했습니다.")
+    return weights
+
+
+def get_bls_relative_importance(bls_series_id: str) -> tuple[float, str]:
+    """BLS 공식 API의 aspect 메타데이터에서 CPI 구성항목의 상대중요도(Relative Importance)를
+    가져온다.
+
+    ⚠️ 실측으로 확인한 응답 형식은 사전 조사(aspect_type/"I1" 코드)와 달랐다 — 실제 aspect
+    항목은 {"name": "Relative Importance", "value": "13.447", ...} 형태로, "name" 필드 문자열이
+    정확히 "Relative Importance"인 것을 찾아야 한다("Relative Importance for previous year"는
+    전년 비교용이라 제외). 이 값은 매 관측월(데이터 포인트)마다 붙어 있고 매월 바뀐다 — 물가
+    상승분을 반영해 매월 재계산되는 BLS 공식 개념이라(연 1회 CE 서베이로 정하는 "기초 지출
+    비중"과는 별개), 이 함수는 항상 가장 최근 관측월의 값을 반환한다(household 대신 최신월
+    데이터 포인트의 aspects를 그대로 신뢰 — API가 최신 데이터를 배열 맨 앞에 반환함을 확인).
+
+    ⚠️ BLS_API_KEY(등록키)가 있어야 이 메타데이터가 활성화된다 — 등록키 없이 catalog=true로
+    요청하면 "catalog has been disabled for this request"로 거부됨을 실측 확인했다. 동일 데이터를
+    등록키 없이 받을 수 있는 flat 파일 경로(download.bls.gov/pub/time.series/cu/)도 실측
+    시도했으나 봇 정책상 자동 접근이 전부 403으로 차단되어(우회 시도 대신 정책 존중) API 경로만
+    유일하게 동작한다. https://www.bls.gov/developers/ 에서 무료 등록키를 발급받아야 한다.
+    """
+    api_key = os.environ.get("BLS_API_KEY")
+    if not api_key:
+        raise MacroDataError(
+            "BLS_API_KEY가 설정되어 있지 않습니다. https://www.bls.gov/developers/ 에서 무료 "
+            "등록키를 발급받아 .env에 추가하세요."
+        )
+
+    payload = {"seriesid": [bls_series_id], "registrationkey": api_key, "aspects": True}
+    try:
+        resp = requests.post(BLS_API_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise MacroDataError(f"BLS API 조회 중 오류가 발생했습니다: {e}") from e
+
+    if data.get("status") != "REQUEST_SUCCEEDED":
+        raise MacroDataError(f"BLS API 오류: {data.get('message')}")
+
+    series_list = data.get("Results", {}).get("series", [])
+    if not series_list:
+        raise MacroDataError(f"BLS 시리즈 '{bls_series_id}' 응답에 데이터가 없습니다.")
+
+    for point in series_list[0].get("data", []):
+        for aspect in point.get("aspects", []):
+            if aspect.get("name") == "Relative Importance":
+                try:
+                    as_of = f"{point['year']}-{point['period'].lstrip('M')}"
+                    return float(aspect["value"]), as_of
+                except (TypeError, ValueError, KeyError):
+                    continue
+
+    raise MacroDataError(
+        f"BLS 시리즈 '{bls_series_id}'에서 상대중요도(Relative Importance) 메타데이터를 찾지 "
+        "못했습니다 (등록키 권한 또는 API 응답 형식을 확인하세요)."
+    )
 
 
 def get_indicator_series(key: str) -> pd.Series:

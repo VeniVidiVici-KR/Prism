@@ -50,6 +50,29 @@ def yoy_percent(series: pd.Series, periods: int = 12) -> pd.Series:
     return (series.pct_change(periods) * 100).dropna()
 
 
+def compute_cpi_contributions(components: list[dict]) -> tuple[pd.DataFrame, float]:
+    """구성항목별 (가중치, YoY)로 헤드라인 기여도(%p)를 분해한다.
+
+    contribution_i ≈ (weight_pct_i / 100) × yoy_i — 항목별 실측 가중치와 이미 공통 기준월로
+    정렬된 YoY%를 곱하는 단순 가산 근사다(호출부가 정렬/공통월 선택을 책임진다. 이 함수는
+    이미 정렬된 값만 받아 곱셈만 한다). components는 각 {"label", "weight_pct", "yoy"} dict.
+    반환: (표 DataFrame[항목/가중치(%)/YoY(%)/기여도(%p)], 기여도 합계(%p)) — 합계를 헤드라인
+    YoY와 비교하는 자기검증은 호출부(뷰)가 담당한다(차이가 크면 억지로 맞추지 말고 그대로
+    드러내야 하므로, 이 순수 함수는 판단 없이 계산 결과만 반환한다).
+    """
+    rows = [
+        {
+            "항목": c["label"],
+            "가중치(%)": c["weight_pct"],
+            "YoY(%)": c["yoy"],
+            "기여도(%p)": c["weight_pct"] / 100 * c["yoy"],
+        }
+        for c in components
+    ]
+    df = pd.DataFrame(rows)
+    return df, float(df["기여도(%p)"].sum())
+
+
 def _cpi_yoy(country: str) -> pd.Series:
     """CPI 지수를 전년동월대비 상승률(%)로 변환한다 (월별 데이터 기준 12개월 전 대비)."""
     cpi = get_indicator_series(f"{country}_CPI")

@@ -25,3 +25,41 @@ def line_chart_with_markers(data: pd.DataFrame, height: int = 320) -> None:
         .properties(height=height)
     )
     st.altair_chart(chart, width="stretch")
+
+
+def pie_chart(data: pd.DataFrame, category_col: str, value_col: str, height: int = 320) -> None:
+    """항목별 비중(%)을 원 그래프로 그린다 — 항목명과 비중%를 툴팁/각도로 표시한다."""
+    chart = (
+        alt.Chart(data)
+        .mark_arc()
+        .encode(
+            theta=alt.Theta(f"{value_col}:Q"),
+            color=alt.Color(f"{category_col}:N", legend=alt.Legend(title=None)),
+            tooltip=[category_col, alt.Tooltip(f"{value_col}:Q", format=".1f")],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def contribution_bar_chart(data: pd.DataFrame, category_col: str, value_col: str, height: int = 320) -> None:
+    """기여도처럼 음수가 나올 수 있는 값을 막대그래프로 그린다.
+
+    큰 값(가장 밀어올린 항목)이 위로 오도록 정렬하고, 0선을 굵은 회색 기준선으로 그려 양/음수
+    경계가 바로 보이게 하며, 양수는 청록, 음수는 빨강으로 색을 구분한다.
+    """
+    sorted_data = data.sort_values(value_col, ascending=False)
+    bars = (
+        alt.Chart(sorted_data)
+        .mark_bar()
+        .encode(
+            x=alt.X(f"{value_col}:Q", title=None),
+            y=alt.Y(f"{category_col}:N", sort=list(sorted_data[category_col]), title=None),
+            color=alt.condition(
+                f"datum['{value_col}'] >= 0", alt.value("#2a9d8f"), alt.value("#e63946")
+            ),
+            tooltip=[category_col, alt.Tooltip(f"{value_col}:Q", format="+.2f")],
+        )
+    )
+    zero_rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="gray").encode(x="x:Q")
+    st.altair_chart((bars + zero_rule).properties(height=height), width="stretch")

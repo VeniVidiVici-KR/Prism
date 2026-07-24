@@ -7,8 +7,25 @@ from dotenv import load_dotenv
 
 import pandas as pd
 
-from valley.composite import COMPOSITE_INDICATORS, CROSS_COUNTRY_INDICATORS, get_composite_series, yoy_percent
-from valley.macro import INDICATORS, MacroDataError, get_indicator_series, normalize_indexed
+from valley.composite import (
+    COMPOSITE_INDICATORS,
+    CROSS_COUNTRY_INDICATORS,
+    compute_cpi_contributions,
+    get_composite_series,
+    yoy_percent,
+)
+from valley.macro import (
+    INDICATORS,
+    KR_CPI_MAJOR_ITEM_CODES,
+    US_CPI_COMPONENT_BLS_IDS,
+    MacroDataError,
+    get_bls_relative_importance,
+    get_ecos_item_weights,
+    get_ecos_series,
+    get_indicator_series,
+    normalize_indexed,
+)
+from views._charts import contribution_bar_chart, pie_chart
 
 MAX_OVERLAY_INDICATORS = 3
 MAX_BUTTONS_PER_ROW = 4
@@ -25,6 +42,10 @@ CPI_COMPARISON_KEYS = {
     "KR": ["KR_CPI", "KR_CPI_FOOD", "KR_CPI_HOUSING", "KR_CPI_TRANSPORT", "KR_CPI_DINING"],
 }
 
+# "CPI 구성 비중 & 기여도" 뷰 전용 — 배타적이고 망라적인 4분할(주거비 등 하위 항목은 근원서비스
+# 안에 포함되므로 이 집합에서 제외, valley/macro.py의 US_CPI_COMPONENT_BLS_IDS 주석 참고).
+US_CPI_BREAKDOWN_KEYS = ["US_CPI_FOOD", "US_CPI_ENERGY", "US_CPI_CORE_GOODS", "US_CPI_CORE_SERVICES"]
+
 load_dotenv(override=True)
 
 st.title("🌐 Macro Indicator")
@@ -40,6 +61,7 @@ if st.session_state.get("macro_country") != country_code:
     st.session_state.macro_composite_selected = None
     st.session_state.macro_overlay_selection = []
     st.session_state.macro_cpi_components_loaded = False
+    st.session_state.macro_cpi_breakdown_loaded = False
 
 if country_code == "KR" and not os.environ.get("ECOS_API_KEY"):
     st.info(
@@ -195,6 +217,196 @@ else:
                 "⚠️ 항목마다 발표 시차로 기준월이 다를 수 있습니다 — 표의 '기준월' 열을 확인하세요. "
                 "최근 N개월 추이를 함께 보려면 아래 '지표 겹쳐보기'에서 같은 항목들을 선택하세요."
             )
+
+st.divider()
+st.header("CPI 구성 비중 & 기여도")
+st.caption(
+    "이번 달 헤드라인 인플레이션 중 무엇이 얼마나 밀어올렸는지 분해합니다. "
+    "기여도(%p) ≈ 가중치(%) × YoY(%). 위 '구성항목 한눈에 보기'와 달리, 여기서는 겹치거나 "
+    "층위가 섞인 항목(미국 주거비-근원서비스, 한국 외식-음식/숙박)을 제외한 배타적·망라적 "
+    "집합만 써서 비중 합이 100%에 가깝게 검산되도록 했습니다."
+)
+st.caption(
+    "⚠️ 가중치 갱신 주기: 한국은 통계청 기준년 개편 시에만 바뀌는 고정 가중치입니다. 미국은 "
+    "실측 결과, 기초 지출 비중(CE 서베이) 자체는 매년 12월에만 개편되지만 BLS가 화면에 보여주는 "
+    "'상대중요도(Relative Importance)'는 그 위에 가격 변동을 반영해 매월 소폭 재계산되는 "
+    "공식 값입니다(BLS 정의) — 물가지표처럼 매번 바뀌는 값은 아니지만 \"연 1회\"는 아닙니다."
+)
+
+
+# ⚠️ 가중치는 지표값과 달리 자주 바뀌지 않는다(미국은 매월 소폭 갱신되지만 물가처럼 매시간
+# 갱신되는 값이 아니고, 한국은 기준년 개편 시에만 바뀐다) — ttl을 1시간(3600)보다 길게(1일,
+# 86400) 잡아 불필요한 재조회를 줄인다. YoY 계열(_load_series)은 기존대로 3600 유지.
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_bls_weight(bls_series_id: str):
+    return get_bls_relative_importance(bls_series_id)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_ecos_weights(stat_code: str):
+    return get_ecos_item_weights(stat_code)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_kr_cpi_component(item_code: str):
+    return get_ecos_series("901Y009", "M", item_code)
+
+
+def _render_cpi_breakdown(components: list[dict], headline_yoy: pd.Series | None) -> None:
+    """구성 비중 원 그래프 + 기여도 막대그래프 + 자기검증(기여도 합 vs 헤드라인)을 그린다.
+
+    components 각 항목은 이미 "공통으로 존재하는 최신 월" 기준으로 정렬된 {"label",
+    "weight_pct", "yoy"}이고, 호출부(국가별 분기)가 그 정렬을 책임진다.
+    """
+    contrib_df, total_contribution = compute_cpi_contributions(components)
+    weight_sum = contrib_df["가중치(%)"].sum()
+    st.caption(f"가중치 합계: {weight_sum:.1f}% (100%에서 크게 벗어나면 항목 누락/중복 가능성 — 위 캡션의 출처 참고).")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**구성 비중**")
+        pie_chart(contrib_df, "항목", "가중치(%)")
+    with col2:
+        st.markdown("**기여도 (%p, 큰 순 정렬)**")
+        contribution_bar_chart(contrib_df, "항목", "기여도(%p)")
+
+    st.dataframe(
+        contrib_df.set_index("항목").style.format(
+            {"가중치(%)": "{:.1f}%", "YoY(%)": "{:+.2f}%", "기여도(%p)": "{:+.2f}%p"}
+        ),
+        width="stretch",
+    )
+
+    if headline_yoy is None:
+        st.warning("헤드라인 YoY와 기준월이 겹치지 않아 자기검증(기여도 합 vs 헤드라인)을 생략합니다.")
+    else:
+        diff = total_contribution - headline_yoy
+        st.caption(
+            f"⚠️ 자기검증 — 기여도 합계 {total_contribution:+.2f}%p vs 헤드라인 YoY {headline_yoy:+.2f}% "
+            f"→ 차이 {diff:+.2f}%p. (반올림·가중치 기준년 시차로 인한 작은 차이는 정상이나, "
+            "크게 벗어나면 항목 집합/가중치가 잘못됐다는 뜻입니다.)"
+        )
+
+
+if country_code == "US":
+    if not os.environ.get("BLS_API_KEY"):
+        st.info(
+            "BLS_API_KEY가 설정되어 있지 않아 미국 구성 비중 & 기여도를 표시할 수 없습니다 — "
+            "가중치(상대중요도)는 BLS 공식 API의 등록키 전용 메타데이터이고, BLS의 HTML/원본파일 "
+            "서버는 봇 정책상 자동 접근이 막혀 있어 대체할 수 없습니다. "
+            "https://www.bls.gov/developers/ 에서 무료 등록키를 발급받아 .env에 "
+            "BLS_API_KEY로 추가하세요."
+        )
+    else:
+        if st.button("구성 비중 & 기여도 불러오기", key="btn_cpi_breakdown"):
+            st.session_state.macro_cpi_breakdown_loaded = True
+
+        if st.session_state.get("macro_cpi_breakdown_loaded"):
+            _breakdown_label_by_key = {
+                ind["key"]: ind["label"] for indicators in INDICATORS["US"].values() for ind in indicators
+            }
+            yoy_by_label: dict[str, pd.Series] = {}
+            weight_by_label: dict[str, float] = {}
+            weight_as_of = None
+            errors = []
+            for key in US_CPI_BREAKDOWN_KEYS:
+                label = _breakdown_label_by_key.get(key, key)
+                try:
+                    weight_pct, weight_as_of = _load_bls_weight(US_CPI_COMPONENT_BLS_IDS[key])
+                    yoy = yoy_percent(_load_series(key))
+                    if yoy.empty:
+                        raise MacroDataError("YoY를 계산할 만큼 데이터가 충분하지 않습니다.")
+                except MacroDataError as e:
+                    errors.append(f"{label}: {e}")
+                    continue
+                yoy_by_label[label] = yoy
+                weight_by_label[label] = weight_pct
+
+            if errors:
+                st.warning("일부 항목을 제외했습니다: " + " / ".join(errors))
+
+            if len(yoy_by_label) < 2:
+                st.info("표시할 수 있는 구성항목이 부족합니다.")
+            else:
+                aligned = pd.concat(yoy_by_label, axis=1, join="inner")
+                if aligned.empty:
+                    st.warning("구성항목들 사이에 겹치는 기준월이 없습니다.")
+                else:
+                    common_month = aligned.index[-1]
+                    latest_row = aligned.loc[common_month]
+                    components = [
+                        {"label": label, "weight_pct": weight_by_label[label], "yoy": latest_row[label]}
+                        for label in yoy_by_label
+                    ]
+                    st.caption(f"기준월: {common_month:%Y-%m} (구성항목 공통 최신월) · 가중치 기준: {weight_as_of}(BLS 상대중요도)")
+
+                    headline_value = None
+                    try:
+                        headline_yoy_series = yoy_percent(_load_series("US_CPI_NSA"))
+                        if common_month in headline_yoy_series.index:
+                            headline_value = float(headline_yoy_series.loc[common_month])
+                    except MacroDataError:
+                        pass
+
+                    _render_cpi_breakdown(components, headline_value)
+else:
+    if st.button("구성 비중 & 기여도 불러오기", key="btn_cpi_breakdown"):
+        st.session_state.macro_cpi_breakdown_loaded = True
+
+    if st.session_state.get("macro_cpi_breakdown_loaded"):
+        try:
+            weights = _load_ecos_weights("901Y009")
+        except MacroDataError as e:
+            st.warning(f"가중치 조회에 실패했습니다: {e}")
+        else:
+            yoy_by_label: dict[str, pd.Series] = {}
+            weight_by_label: dict[str, float] = {}
+            errors = []
+            for code in KR_CPI_MAJOR_ITEM_CODES:
+                if code not in weights:
+                    errors.append(f"{code}: 가중치 메타데이터에 없음")
+                    continue
+                name, weight_permille = weights[code]
+                try:
+                    yoy = yoy_percent(_load_kr_cpi_component(code))
+                    if yoy.empty:
+                        raise MacroDataError("YoY를 계산할 만큼 데이터가 충분하지 않습니다.")
+                except MacroDataError as e:
+                    errors.append(f"{name}: {e}")
+                    continue
+                yoy_by_label[name] = yoy
+                weight_by_label[name] = weight_permille / 10
+
+            if errors:
+                st.warning("일부 항목을 제외했습니다: " + " / ".join(errors))
+
+            if len(yoy_by_label) < 2:
+                st.info("표시할 수 있는 구성항목이 부족합니다.")
+            else:
+                aligned = pd.concat(yoy_by_label, axis=1, join="inner")
+                if aligned.empty:
+                    st.warning("구성항목들 사이에 겹치는 기준월이 없습니다.")
+                else:
+                    common_month = aligned.index[-1]
+                    latest_row = aligned.loc[common_month]
+                    components = [
+                        {"label": label, "weight_pct": weight_by_label[label], "yoy": latest_row[label]}
+                        for label in yoy_by_label
+                    ]
+                    st.caption(
+                        f"기준월: {common_month:%Y-%m} (구성항목 공통 최신월) · "
+                        "가중치 출처: ECOS StatisticItemList(901Y009) 실시간 메타데이터"
+                    )
+
+                    headline_value = None
+                    try:
+                        headline_yoy_series = yoy_percent(_load_series("KR_CPI"))
+                        if common_month in headline_yoy_series.index:
+                            headline_value = float(headline_yoy_series.loc[common_month])
+                    except MacroDataError:
+                        pass
+
+                    _render_cpi_breakdown(components, headline_value)
 
 st.divider()
 st.header("지표 겹쳐보기")
