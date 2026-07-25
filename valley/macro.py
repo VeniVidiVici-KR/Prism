@@ -119,6 +119,20 @@ INDICATORS = {
         "통화": [
             {"key": "US_M2SL", "label": "M2 통화량", "fred_id": "M2SL"},
         ],
+        # ⚠️ 국가부채 정의는 여러 개(총부채/순부채, 중앙정부/일반정부)라 한미를 다른 정의로
+        # 가져오면 비교가 무의미해진다. "GGGDTAUSA188N"/"GGGDTAKRA188N" 둘 다 실측 확인
+        # 결과 IMF WEO(World Economic Outlook) 출처의 "일반정부 총부채(General government
+        # gross debt, GFSM 2001 정의 — SDR·통화성예금·채무증권·차입금·보험/연금/표준화보증·
+        # 기타미지급금 포함, 지분·투자펀드지분·파생상품 제외)"로 두 나라가 정확히 동일한
+        # 정의·출처·단위(% of GDP)·주기(연간, NSA)임을 확인했다(시리즈 ID의 "188N" 접미사가
+        # IMF WEO 지표 코드로 국가 전체에 공통 적용됨 — 임의 추정이 아니라 FRED 설명 대조로
+        # 확인). 이미 IMF가 %로 계산해 발표한 값을 그대로 쓴다(지수/절대액에서 직접 나누지
+        # 않음). 미국 최신 2024년 120.786%, 한국 최신 2023년 50.697%로 상식적 범위(미국
+        # 100%+, 한국이 더 낮음). ⚠️ 연간 데이터라 두 나라의 최신 갱신 연도가 다를 수 있다
+        # (실측 시점 기준 미국 2024년까지, 한국 2023년까지) — 화면에 반드시 기준연도를 표시한다.
+        "재정": [
+            {"key": "US_DEBT_GDP", "label": "국가부채/GDP (일반정부 총부채, IMF WEO 기준)", "fred_id": "GGGDTAUSA188N"},
+        ],
     },
     "KR": {
         "물가": [
@@ -237,6 +251,13 @@ INDICATORS = {
                 "label": "가계신용 잔액 (분기별, 십억원)",
                 "ecos": {"stat_code": "151Y001", "cycle": "Q", "item_code": "1000000"},
             },
+        ],
+        # 미국 US_DEBT_GDP(GGGDTAUSA188N)와 동일한 IMF WEO "일반정부 총부채, % of GDP" 정의 —
+        # valley/macro.py 상단 US "재정" 카테고리 주석 참고. 한국은 FRED가 이 시리즈를 이미
+        # ECOS 없이 IMF WEO 원본 그대로 미러링하므로 ECOS 폴백이 필요 없다(FRED 키도 필요
+        # 없음 — 공개 CSV 엔드포인트).
+        "재정": [
+            {"key": "KR_DEBT_GDP", "label": "국가부채/GDP (일반정부 총부채, IMF WEO 기준)", "fred_id": "GGGDTAKRA188N"},
         ],
     },
 }

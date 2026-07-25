@@ -409,6 +409,51 @@ else:
                     _render_cpi_breakdown(components, headline_value)
 
 st.divider()
+st.header("한미 국가부채/GDP 비교")
+st.caption(
+    "국제 비교 표준인 일반정부 총부채(General government gross debt, IMF WEO 기준, GFSM 2001 "
+    "정의)로 미국·한국을 동일 기준으로 비교합니다. 이미 IMF가 %로 계산해 발표한 값을 그대로 "
+    "쓰고(지수·절대액에서 직접 나누지 않음), 둘 다 같은 단위(%)라 정규화 없이 원값을 겹쳐 "
+    "그립니다. ⚠️ 연간 데이터라 두 나라의 최신 발표 연도가 다를 수 있습니다 — 표의 '기준연도' "
+    "열을 확인하세요."
+)
+
+_DEBT_GDP_KEYS = {"미국": "US_DEBT_GDP", "한국": "KR_DEBT_GDP"}
+
+if st.button("한미 국가부채/GDP 비교 보기", key="btn_debt_gdp_compare"):
+    st.session_state.macro_debt_gdp_loaded = True
+
+if st.session_state.get("macro_debt_gdp_loaded"):
+    debt_series = {}
+    debt_failed = []
+    for country_label, key in _DEBT_GDP_KEYS.items():
+        try:
+            debt_series[country_label] = _load_series(key)
+        except MacroDataError as e:
+            debt_failed.append(f"{country_label}: {e}")
+
+    if debt_failed:
+        st.warning("일부 국가 데이터를 가져오지 못했습니다: " + " / ".join(debt_failed))
+
+    if not debt_series:
+        st.info("표시할 수 있는 데이터가 없습니다.")
+    else:
+        debt_rows = [
+            {"국가": label, "최신값(%)": s.iloc[-1], "기준연도": s.index[-1].strftime("%Y")}
+            for label, s in debt_series.items()
+        ]
+        st.dataframe(
+            pd.DataFrame(debt_rows).set_index("국가").style.format({"최신값(%)": "{:.1f}%"}),
+            width="stretch",
+        )
+        if len(debt_series) >= 2:
+            # 연간 데이터라 두 나라의 마지막 관측 연도가 다를 수 있어(실측: 미국 2024년까지,
+            # 한국 2023년까지) join="outer"로 겹쳐 그린다 — inner로 자르면 더 최신인 쪽의
+            # 마지막 해가 잘려나가 정보 손실이 생긴다.
+            st.line_chart(pd.concat(debt_series, axis=1, join="outer"))
+        st.caption("두 시리즈 모두 이미 %로 계산된 IMF WEO 원값입니다 — 정규화하지 않았습니다.")
+
+st.divider()
 st.header("지표 겹쳐보기")
 st.caption(
     "서로 다른 단위의 지표를 비교할 수 있도록, 겹치는 기간의 첫 관측치를 100으로 지수화해 "
