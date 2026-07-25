@@ -23,6 +23,7 @@ from valley.edgar import get_cik as _get_cik
 from valley.edgar import get_filings_by_type as _get_filings_by_type
 from valley.edgar import get_mda_section_text as _get_mda_section_text
 from valley.edgar import get_recent_filings as _get_recent_filings
+from valley.company_summary import summarize_company_overview as _summarize_company_overview
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
 from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
@@ -176,6 +177,15 @@ def get_mda_section_text(cik: str, accession_number: str, form_type: str) -> dic
     원문을 반복 파싱하지 않도록 get_8k_filing_text와 동일한 기준(ttl 길게)으로 캐싱한다.
     "요약 전 크기 확인" 흐름에서 추출 버튼을 다시 눌러도 재파싱하지 않는다."""
     return _get_mda_section_text(cik, accession_number, form_type)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def summarize_company_overview(company_name: str, business_summary: str, engine: str | None = None) -> str:
+    """⚠️ 비용 통제 지점 — summarize_8k_filing과 동일한 이유로 business_summary(원문)와
+    engine이 모두 캐시 키에 포함된다. business_summary는 같은 티커라면 재조회해도 내용이
+    거의 불변이라(회사 사업 서술은 자주 안 바뀜) company_name+business_summary가 사실상
+    ticker 역할을 한다 — 같은 종목·같은 엔진으로 재클릭해도 API를 다시 부르지 않는다."""
+    return _summarize_company_overview(company_name, business_summary, engine)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

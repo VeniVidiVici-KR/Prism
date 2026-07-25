@@ -67,6 +67,15 @@ def build_snapshot(ticker: str, info: dict) -> dict:
         "industry": info.get("industry", "N/A"),
         "shares_outstanding": info.get("sharesOutstanding"),
         "market_cap": info.get("marketCap"),
+        # ⚠️ "회사 개요" 섹션 전용 — 이미 위에서 받은 info를 그대로 재사용한다(추가 .info
+        # 호출 없음). 실측 확인(AAPL/MSFT/JPM): 전부 존재. 실측 확인(빈 종목 사례, 예:
+        # 데이터 없는 티커): 전부 None — 호출부(뷰)가 없는 값만 개별적으로 생략해야 한다.
+        "employees": info.get("fullTimeEmployees"),
+        "website": info.get("website"),
+        "city": info.get("city"),
+        "state": info.get("state"),
+        "country": info.get("country"),
+        "business_summary": info.get("longBusinessSummary"),
     }
 
 
