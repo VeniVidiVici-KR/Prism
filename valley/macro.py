@@ -119,6 +119,74 @@ INDICATORS = {
         "통화": [
             {"key": "US_M2SL", "label": "M2 통화량", "fred_id": "M2SL"},
         ],
+        # ⚠️ ISM 제조업 PMI는 실측 조사로 FRED에서 완전히 삭제됐음을 확인했다(NAPM* 7종 전부
+        # 404 — 2016-06-24 ISM의 라이선스 요청으로 FRED가 ISM 계열 22종을 일괄 삭제한 공식
+        # 조치, 뒤늦게 되살아난 것도 아니고 대체 ID도 없음). 대안으로 지역 연준 제조업
+        # 서베이(공공 데이터, FRED 무료 제공)를 실측 확인해 추가한다 — 필라델피아 연준(제3
+        # 연준구: 펜실베이니아 동부·뉴저지 남부·델라웨어)과 뉴욕 연준(뉴욕주)의 두 서베이 전부
+        # 2026-07까지 최신, 월별 계절조정(SA). "성장·소비"(UMCSENT 등 이미 존재)와는 성격이
+        # 달라(제조업 한정 심리 서베이) 별도 카테고리로 분리했다 — 섞으면 "성장·소비"가
+        # 과밀해지고, 이 지표들 고유의 "지역 한정·0 기준 확산지수"라는 주의사항이 묻힌다.
+        # ⚠️ 라벨에 지역 범위를 반드시 명시한다 — 전국 지표가 아닌데 ISM 자리를 대신하다 보니
+        # "미국 제조업"으로 오해되기 쉽다. ⚠️ 이 지수들은 ISM(50 기준 확산지수, 보통 40~65대)과
+        # 달리 0을 기준으로 ±로 움직인다(실측: 필라델피아 재고 0.3, 때로 음수) — 라벨/캡션에
+        # 스케일 기준을 명시해 ISM 감각으로 오독하지 않게 한다. ⚠️ 종합지수(General
+        # Activity/General Business Conditions)는 세부항목의 가중합성이 아니라 설문의 별도
+        # 문항이다(뉴욕 연준 FRED 설명에 "a distinct question posed on the survey"로 명시,
+        # 필라델피아도 전반활동과 개별지표를 각각 따로 묻는 구조로 확인) — 그래서 CPI처럼
+        # 기여도 분해·원 그래프를 만들지 않는다(산식 관계 자체가 없음, 억지로 맞추면 안 맞는다).
+        "경기·심리": [
+            {
+                "key": "US_PHILLY_GA",
+                "label": "필라델피아 연준 제조업 종합지수 (지역 서베이, 0=확장/위축 경계)",
+                "fred_id": "GACDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_PHILLY_NEWORDERS",
+                "label": "필라델피아 연준 제조업 신규주문 (지역 서베이, 0 기준)",
+                "fred_id": "NOCDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_PHILLY_SHIPMENTS",
+                "label": "필라델피아 연준 제조업 출하 (지역 서베이, 0 기준)",
+                "fred_id": "SHCDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_PHILLY_EMPLOYMENT",
+                "label": "필라델피아 연준 제조업 고용 (지역 서베이, 0 기준)",
+                "fred_id": "NECDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_PHILLY_PRICES_PAID",
+                "label": "필라델피아 연준 제조업 지불가격 (지역 서베이, 0 기준, 재화 인플레 선행지표)",
+                "fred_id": "PPCDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_PHILLY_INVENTORIES",
+                "label": "필라델피아 연준 제조업 재고 (지역 서베이, 0 기준)",
+                "fred_id": "IVCDFSA066MSFRBPHI",
+            },
+            {
+                "key": "US_EMPIRE_GA",
+                "label": "뉴욕 연준 엠파이어스테이트 제조업 종합지수 (뉴욕주 서베이, 0=확장/위축 경계)",
+                "fred_id": "GACDISA066MSFRBNY",
+            },
+            {
+                "key": "US_EMPIRE_NEWORDERS",
+                "label": "뉴욕 연준 엠파이어스테이트 신규주문 (뉴욕주 서베이, 0 기준)",
+                "fred_id": "NOCDISA066MSFRBNY",
+            },
+            {
+                "key": "US_EMPIRE_EMPLOYMENT",
+                "label": "뉴욕 연준 엠파이어스테이트 고용 (뉴욕주 서베이, 0 기준)",
+                "fred_id": "NECDISA066MSFRBNY",
+            },
+            {
+                "key": "US_EMPIRE_PRICES_PAID",
+                "label": "뉴욕 연준 엠파이어스테이트 지불가격 (뉴욕주 서베이, 0 기준)",
+                "fred_id": "PPCDISA066MSFRBNY",
+            },
+        ],
         # ⚠️ 국가부채 정의는 여러 개(총부채/순부채, 중앙정부/일반정부)라 한미를 다른 정의로
         # 가져오면 비교가 무의미해진다. "GGGDTAUSA188N"/"GGGDTAKRA188N" 둘 다 실측 확인
         # 결과 IMF WEO(World Economic Outlook) 출처의 "일반정부 총부채(General government
