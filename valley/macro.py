@@ -57,7 +57,13 @@ class MacroDataError(Exception):
     """매크로 지표를 조회하지 못했을 때 발생."""
 
 
-# 카테고리 -> [{key, label, ...}] 형태의 카탈로그. get_indicator_series가 key로 조회한다.
+# 카테고리 -> [{key, label, description?, ...}] 형태의 카탈로그. get_indicator_series가 key로
+# 조회한다. ⚠️ label은 버튼 한 줄에 들어가는 "짧은 이름"이고, description(선택 필드)은 지역
+# 범위·기준선·계절조정 여부·출처 같은 부가정보다 — 예전엔 이 부가정보를 label 괄호 안에
+# 욱여넣어 버튼 안에서 줄바꿈되며 삐져나왔다(예: "필라델피아 연준 제조업 지불가격 (지역
+# 서베이, 0 기준, 재화 인플레 선행지표)"). description은 버튼 툴팁(help)과 지표 선택 후
+# 캡션 두 곳에 노출되므로 정보를 삭제한 게 아니라 자리만 옮긴 것이다. description이 없는
+# 항목은 label 자체로 충분히 짧고 명확하다고 판단해 그대로 뒀다.
 INDICATORS = {
     "US": {
         "물가": [
@@ -80,29 +86,56 @@ INDICATORS = {
         # 계열 안에서만 일관되게 뒀다 — CPI 원계열 그룹과는 섞이지 않도록 라벨에 각각
         # "(원계열)"/"(계절조정)"을 명시했고, STEP 3 비교표는 CPI 원계열 항목만 묶는다.
         "물가 세부": [
-            {"key": "US_CPI_NSA", "label": "CPI 총지수 (원계열, 구성항목 비교 기준)", "fred_id": "CPIAUCNS"},
-            {"key": "US_CPI_SHELTER", "label": "주거비 (원계열)", "fred_id": "CUUR0000SAH1"},
-            {"key": "US_CPI_FOOD", "label": "식품 (원계열)", "fred_id": "CPIUFDNS"},
-            {"key": "US_CPI_ENERGY", "label": "에너지 (원계열)", "fred_id": "CPIENGNS"},
-            {"key": "US_CPI_CORE_GOODS", "label": "근원 상품 - 식품·에너지 제외 (원계열)", "fred_id": "CUUR0000SACL1E"},
-            {"key": "US_CPI_CORE_SERVICES", "label": "근원 서비스 - 에너지서비스 제외 (원계열)", "fred_id": "CUUR0000SASLE"},
-            {"key": "US_PCE_GOODS", "label": "PCE 재화 물가지수 (계절조정)", "fred_id": "DGDSRG3M086SBEA"},
-            {"key": "US_PCE_SERVICES", "label": "PCE 서비스 물가지수 (계절조정)", "fred_id": "DSERRG3M086SBEA"},
+            {
+                "key": "US_CPI_NSA", "label": "CPI 총지수(원계열)", "fred_id": "CPIAUCNS",
+                "description": "원계열(NSA) · 구성항목 비교의 기준 시리즈",
+            },
+            {
+                "key": "US_CPI_SHELTER", "label": "주거비", "fred_id": "CUUR0000SAH1",
+                "description": "원계열(NSA) · 근원서비스의 하위 항목(배타적 4분할에는 미포함)",
+            },
+            {"key": "US_CPI_FOOD", "label": "식품", "fred_id": "CPIUFDNS", "description": "원계열(NSA)"},
+            {"key": "US_CPI_ENERGY", "label": "에너지", "fred_id": "CPIENGNS", "description": "원계열(NSA)"},
+            {
+                "key": "US_CPI_CORE_GOODS", "label": "근원 상품", "fred_id": "CUUR0000SACL1E",
+                "description": "식품·에너지 제외 상품 · 원계열(NSA)",
+            },
+            {
+                "key": "US_CPI_CORE_SERVICES", "label": "근원 서비스", "fred_id": "CUUR0000SASLE",
+                "description": "에너지서비스 제외 · 원계열(NSA)",
+            },
+            {
+                "key": "US_PCE_GOODS", "label": "PCE 재화", "fred_id": "DGDSRG3M086SBEA",
+                "description": "PCE 재화 물가지수 · 계절조정(SA)",
+            },
+            {
+                "key": "US_PCE_SERVICES", "label": "PCE 서비스", "fred_id": "DSERRG3M086SBEA",
+                "description": "PCE 서비스 물가지수 · 계절조정(SA)",
+            },
         ],
         "금리": [
             {"key": "US_FEDFUNDS", "label": "연방기금금리(기준금리)", "fred_id": "FEDFUNDS"},
             {"key": "US_DGS10", "label": "10년 국채금리", "fred_id": "DGS10"},
             {"key": "US_DGS2", "label": "2년 국채금리", "fred_id": "DGS2"},
             {"key": "US_DGS3MO", "label": "3개월 국채금리", "fred_id": "DGS3MO"},
-            {"key": "US_T10Y2Y", "label": "장단기 금리차 (10Y-2Y)", "fred_id": "T10Y2Y"},
-            {"key": "US_T10Y3M", "label": "장단기 금리차 (10Y-3M, 침체 예측력 더 강함)", "fred_id": "T10Y3M"},
+            {"key": "US_T10Y2Y", "label": "장단기 금리차(10Y-2Y)", "fred_id": "T10Y2Y"},
+            {
+                "key": "US_T10Y3M", "label": "장단기 금리차(10Y-3M)", "fred_id": "T10Y3M",
+                "description": "침체 예측력이 10Y-2Y보다 더 강한 것으로 알려진 스프레드",
+            },
         ],
         "위험지표": [
-            {"key": "US_HY_SPREAD", "label": "하이일드 스프레드 (신용 리스크 프리미엄, %p)", "fred_id": "BAMLH0A0HYM2"},
-            {"key": "US_VIX", "label": "VIX 변동성지수 (낮을수록 안정)", "fred_id": "VIXCLS"},
+            {
+                "key": "US_HY_SPREAD", "label": "하이일드 스프레드", "fred_id": "BAMLH0A0HYM2",
+                "description": "신용 리스크 프리미엄, 단위 %p",
+            },
+            {"key": "US_VIX", "label": "VIX 변동성지수", "fred_id": "VIXCLS", "description": "낮을수록 시장이 안정적"},
             {"key": "US_BREAKEVEN10", "label": "10년 기대인플레이션(BEI)", "fred_id": "T10YIE"},
             {"key": "US_REAL_RATE10", "label": "10년 실질금리(TIPS)", "fred_id": "DFII10"},
-            {"key": "US_DOLLAR", "label": "달러인덱스 (무역가중, 2006년 1월=100 기준)", "fred_id": "DTWEXBGS"},
+            {
+                "key": "US_DOLLAR", "label": "달러인덱스", "fred_id": "DTWEXBGS",
+                "description": "무역가중, 2006년 1월=100 기준",
+            },
         ],
         "고용": [
             {"key": "US_UNRATE", "label": "실업률", "fred_id": "UNRATE"},
@@ -135,56 +168,56 @@ INDICATORS = {
         # 문항이다(뉴욕 연준 FRED 설명에 "a distinct question posed on the survey"로 명시,
         # 필라델피아도 전반활동과 개별지표를 각각 따로 묻는 구조로 확인) — 그래서 CPI처럼
         # 기여도 분해·원 그래프를 만들지 않는다(산식 관계 자체가 없음, 억지로 맞추면 안 맞는다).
+        # ⚠️ 라벨은 "필라"/"엠파이어"로 줄였다 — 같은 카테고리 안에서 두 서베이를 구분할 수
+        # 있어야 해서 완전 삭제 대신 짧은 약칭을 남겼다("필라델피아 연준 제조업 지불가격"처럼
+        # 풀네임+세부항목을 다 붙이면 버튼 한 줄을 넘겨 줄바꿈되던 문제를 해결). 지역
+        # 범위·기준선·서베이 성격(별도 문항) 같은 부가정보는 description으로 옮겼다.
         "경기·심리": [
             {
-                "key": "US_PHILLY_GA",
-                "label": "필라델피아 연준 제조업 종합지수 (지역 서베이, 0=확장/위축 경계)",
-                "fred_id": "GACDFSA066MSFRBPHI",
+                "key": "US_PHILLY_GA", "label": "필라 종합지수", "fred_id": "GACDFSA066MSFRBPHI",
+                "description": (
+                    "필라델피아 연준 제조업 서베이(제3연준구: 펜실베이니아 동부·뉴저지 남부·"
+                    "델라웨어) · 0=확장/위축 경계 · 세부항목의 가중합성이 아닌 별도 설문 문항"
+                ),
             },
             {
-                "key": "US_PHILLY_NEWORDERS",
-                "label": "필라델피아 연준 제조업 신규주문 (지역 서베이, 0 기준)",
-                "fred_id": "NOCDFSA066MSFRBPHI",
+                "key": "US_PHILLY_NEWORDERS", "label": "필라 신규주문", "fred_id": "NOCDFSA066MSFRBPHI",
+                "description": "필라델피아 연준 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_PHILLY_SHIPMENTS",
-                "label": "필라델피아 연준 제조업 출하 (지역 서베이, 0 기준)",
-                "fred_id": "SHCDFSA066MSFRBPHI",
+                "key": "US_PHILLY_SHIPMENTS", "label": "필라 출하", "fred_id": "SHCDFSA066MSFRBPHI",
+                "description": "필라델피아 연준 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_PHILLY_EMPLOYMENT",
-                "label": "필라델피아 연준 제조업 고용 (지역 서베이, 0 기준)",
-                "fred_id": "NECDFSA066MSFRBPHI",
+                "key": "US_PHILLY_EMPLOYMENT", "label": "필라 고용", "fred_id": "NECDFSA066MSFRBPHI",
+                "description": "필라델피아 연준 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_PHILLY_PRICES_PAID",
-                "label": "필라델피아 연준 제조업 지불가격 (지역 서베이, 0 기준, 재화 인플레 선행지표)",
-                "fred_id": "PPCDFSA066MSFRBPHI",
+                "key": "US_PHILLY_PRICES_PAID", "label": "필라 지불가격", "fred_id": "PPCDFSA066MSFRBPHI",
+                "description": "필라델피아 연준 제조업 서베이 · 0 기준 · 재화 인플레 선행지표",
             },
             {
-                "key": "US_PHILLY_INVENTORIES",
-                "label": "필라델피아 연준 제조업 재고 (지역 서베이, 0 기준)",
-                "fred_id": "IVCDFSA066MSFRBPHI",
+                "key": "US_PHILLY_INVENTORIES", "label": "필라 재고", "fred_id": "IVCDFSA066MSFRBPHI",
+                "description": "필라델피아 연준 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_EMPIRE_GA",
-                "label": "뉴욕 연준 엠파이어스테이트 제조업 종합지수 (뉴욕주 서베이, 0=확장/위축 경계)",
-                "fred_id": "GACDISA066MSFRBNY",
+                "key": "US_EMPIRE_GA", "label": "엠파이어 종합지수", "fred_id": "GACDISA066MSFRBNY",
+                "description": (
+                    "뉴욕 연준 엠파이어스테이트 제조업 서베이(뉴욕주) · 0=확장/위축 경계 · "
+                    "세부항목의 가중합성이 아닌 별도 설문 문항"
+                ),
             },
             {
-                "key": "US_EMPIRE_NEWORDERS",
-                "label": "뉴욕 연준 엠파이어스테이트 신규주문 (뉴욕주 서베이, 0 기준)",
-                "fred_id": "NOCDISA066MSFRBNY",
+                "key": "US_EMPIRE_NEWORDERS", "label": "엠파이어 신규주문", "fred_id": "NOCDISA066MSFRBNY",
+                "description": "뉴욕 연준 엠파이어스테이트 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_EMPIRE_EMPLOYMENT",
-                "label": "뉴욕 연준 엠파이어스테이트 고용 (뉴욕주 서베이, 0 기준)",
-                "fred_id": "NECDISA066MSFRBNY",
+                "key": "US_EMPIRE_EMPLOYMENT", "label": "엠파이어 고용", "fred_id": "NECDISA066MSFRBNY",
+                "description": "뉴욕 연준 엠파이어스테이트 제조업 서베이 · 0 기준 확산지수",
             },
             {
-                "key": "US_EMPIRE_PRICES_PAID",
-                "label": "뉴욕 연준 엠파이어스테이트 지불가격 (뉴욕주 서베이, 0 기준)",
-                "fred_id": "PPCDISA066MSFRBNY",
+                "key": "US_EMPIRE_PRICES_PAID", "label": "엠파이어 지불가격", "fred_id": "PPCDISA066MSFRBNY",
+                "description": "뉴욕 연준 엠파이어스테이트 제조업 서베이 · 0 기준 확산지수",
             },
         ],
         # ⚠️ 국가부채 정의는 여러 개(총부채/순부채, 중앙정부/일반정부)라 한미를 다른 정의로
@@ -199,7 +232,10 @@ INDICATORS = {
         # 100%+, 한국이 더 낮음). ⚠️ 연간 데이터라 두 나라의 최신 갱신 연도가 다를 수 있다
         # (실측 시점 기준 미국 2024년까지, 한국 2023년까지) — 화면에 반드시 기준연도를 표시한다.
         "재정": [
-            {"key": "US_DEBT_GDP", "label": "국가부채/GDP (일반정부 총부채, IMF WEO 기준)", "fred_id": "GGGDTAUSA188N"},
+            {
+                "key": "US_DEBT_GDP", "label": "국가부채/GDP", "fred_id": "GGGDTAUSA188N",
+                "description": "일반정부 총부채, IMF WEO 기준 · 연간",
+            },
         ],
     },
     "KR": {
@@ -224,22 +260,26 @@ INDICATORS = {
         "물가 세부": [
             {
                 "key": "KR_CPI_FOOD",
-                "label": "식료품 및 비주류음료",
+                "label": "식료품",
+                "description": "식료품 및 비주류음료 · ECOS 지출목적별 대분류 A",
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "A"},
             },
             {
                 "key": "KR_CPI_HOUSING",
-                "label": "주택,수도,전기 및 연료",
+                "label": "주택·수도·전기·연료",
+                "description": "ECOS 지출목적별 대분류 D",
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "D"},
             },
             {
                 "key": "KR_CPI_TRANSPORT",
                 "label": "교통",
+                "description": "ECOS 지출목적별 대분류 G",
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "G"},
             },
             {
                 "key": "KR_CPI_DINING",
-                "label": "외식(음식 서비스)",
+                "label": "외식",
+                "description": "음식 서비스 · ECOS 중분류 K01(대분류 K 음식·숙박의 하위)",
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "K01"},
             },
         ],
@@ -275,7 +315,8 @@ INDICATORS = {
                 # 2024-10 이후 갱신이 끊긴 데다 단위도 GDP대비 %라 원계열(백만달러)과 안 맞아
                 # 폴백으로 쓰지 않고 ECOS 전용으로 둔다.
                 "key": "KR_CURRENT_ACCOUNT",
-                "label": "경상수지 (월별, 백만달러)",
+                "label": "경상수지",
+                "description": "월별, 백만달러",
                 "ecos": {"stat_code": "301Y013", "cycle": "M", "item_code": "000000"},
             },
             {
@@ -287,7 +328,8 @@ INDICATORS = {
                 # 폴백(XTEXVA01KRM667S)은 2026-04 기준 858.1억달러로 ECOS 원계열과 거의 일치
                 # (같은 통관기준 수출 시계열의 OECD 미러로 판단) — 신뢰 가능한 폴백으로 채택.
                 "key": "KR_EXPORTS",
-                "label": "수출액 (월별, 천달러, 통관기준)",
+                "label": "수출액",
+                "description": "월별, 천달러, 통관기준",
                 "fred_id": "XTEXVA01KRM667S",
                 "ecos": {"stat_code": "901Y118", "cycle": "M", "item_code": "T002"},
             },
@@ -299,7 +341,8 @@ INDICATORS = {
                 # 두 계열 다 최신이고 스케일이 같은 단위(백만달러 상당)라 근사 폴백으로는
                 # 허용 가능하다고 판단했다(정확한 회계 대조용이 아니라 추이 확인용 지표라서).
                 "key": "KR_FX_RESERVES",
-                "label": "외환보유액 (월별, 천달러)",
+                "label": "외환보유액",
+                "description": "월별, 천달러",
                 "fred_id": "TRESEGKRM052N",
                 "ecos": {"stat_code": "732Y001", "cycle": "M", "item_code": "99"},
             },
@@ -316,7 +359,8 @@ INDICATORS = {
                 # FRED에서 확인된 후보(HDTGPDKRQ163N 등)는 전부 "가계부채/GDP 비율(%)"이라
                 # 십억원 단위 잔액과 단위가 달라 폴백으로 쓸 수 없다 — ECOS 전용으로 둔다.
                 "key": "KR_HOUSEHOLD_CREDIT",
-                "label": "가계신용 잔액 (분기별, 십억원)",
+                "label": "가계신용 잔액",
+                "description": "분기별, 십억원",
                 "ecos": {"stat_code": "151Y001", "cycle": "Q", "item_code": "1000000"},
             },
         ],
@@ -325,7 +369,10 @@ INDICATORS = {
         # ECOS 없이 IMF WEO 원본 그대로 미러링하므로 ECOS 폴백이 필요 없다(FRED 키도 필요
         # 없음 — 공개 CSV 엔드포인트).
         "재정": [
-            {"key": "KR_DEBT_GDP", "label": "국가부채/GDP (일반정부 총부채, IMF WEO 기준)", "fred_id": "GGGDTAKRA188N"},
+            {
+                "key": "KR_DEBT_GDP", "label": "국가부채/GDP", "fred_id": "GGGDTAKRA188N",
+                "description": "일반정부 총부채, IMF WEO 기준 · 연간",
+            },
         ],
     },
 }

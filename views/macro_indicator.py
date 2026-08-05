@@ -28,7 +28,7 @@ from valley.macro import (
 from views._charts import contribution_bar_chart, pie_chart
 
 MAX_OVERLAY_INDICATORS = 3
-MAX_BUTTONS_PER_ROW = 4
+MAX_BUTTONS_PER_ROW = 5
 
 # STEP 3 "CPI 구성항목 한눈에 보기" 비교표에 포함할 key 목록. ⚠️ 동일 조정(SA/NSA) 방식만
 # 묶는다 — 미국은 원계열(NSA)로 통일한 항목만, PCE 재화/서비스(계절조정)는 조정 방식이 달라
@@ -95,16 +95,52 @@ def _load_series(key: str):
 st.caption("아래 버튼을 눌러 보고 싶은 지표의 차트만 불러옵니다.")
 
 
+def _balanced_row_sizes(n: int, max_cols: int = MAX_BUTTONS_PER_ROW) -> list[int]:
+    """n개 항목을 max_cols 이하 열의 여러 줄에 최대한 고르게 나눈다.
+
+    예전엔 max_cols개씩 고정으로 잘라(예: 10개를 4개씩) 마지막 줄만 휑하게 남았다
+    (4+4+2). 대신 줄 수를 먼저 정하고(ceil(n/max_cols)) 그 줄 수로 최대한 균등하게
+    나눠(10개, 최대 5열 → 5+5) 마지막 줄이 비어 보이지 않게 한다. 반환값은 각 줄에 넣을
+    항목 수 리스트(예: [5, 5] 또는 [3, 3]).
+    """
+    if n <= 0:
+        return []
+    if n <= max_cols:
+        return [n]
+    rows = -(-n // max_cols)  # ceil division
+    base, extra = divmod(n, rows)
+    return [base + 1 if i < extra else base for i in range(rows)]
+
+
 def _render_indicator_buttons(indicators: list[dict]) -> None:
-    """카탈로그가 커져 한 줄에 다 못 넣을 수 있어(예: '물가 세부') 최대
-    MAX_BUTTONS_PER_ROW개씩 여러 줄로 나눠 그린다 — 항목이 적은 카테고리는 기존과
-    동일하게 한 줄로 보인다."""
-    for i in range(0, len(indicators), MAX_BUTTONS_PER_ROW):
-        chunk = indicators[i : i + MAX_BUTTONS_PER_ROW]
-        cols = st.columns(MAX_BUTTONS_PER_ROW)
+    """_balanced_row_sizes로 계산한 줄 구성대로 버튼을 그린다.
+
+    ⚠️ 현재 선택된 지표는 type="primary"로 강조해 어떤 지표를 보고 있는지 한눈에
+    드러나게 하고(이전엔 버튼이라 선택 상태가 안 보였다), description이 있으면 버튼
+    마우스오버 툴팁(help)으로 보여준다 — 라벨을 짧게 줄이며 뺀 부가정보를 삭제한 게
+    아니라 자리를 옮긴 것이다(캡션 쪽은 아래 지표 선택 후 표시 영역에서 담당).
+    """
+    row_sizes = _balanced_row_sizes(len(indicators))
+    idx = 0
+    for row_size in row_sizes:
+        chunk = indicators[idx : idx + row_size]
+        idx += row_size
+        cols = st.columns(row_size)
         for col, indicator in zip(cols, chunk):
-            if col.button(indicator["label"], key=f"btn_{indicator['key']}", width="stretch"):
+            is_selected = indicator["key"] == st.session_state.get("macro_selected")
+            if col.button(
+                indicator["label"],
+                key=f"btn_{indicator['key']}",
+                width="stretch",
+                help=indicator.get("description"),
+                type="primary" if is_selected else "secondary",
+            ):
                 st.session_state.macro_selected = indicator["key"]
+                # ⚠️ session_state 갱신만으로는 방금 클릭한 버튼의 type="primary" 강조가 이번
+                # 렌더링에 반영되지 않는다(위 is_selected는 이 버튼을 그리기 "전"에 이미 계산돼
+                # 있었다) — AI 요약 결과를 바로 보여줄 때와 같은 이유로 재실행해 강조를 즉시
+                # 반영한다(타이머 기반 자동 새로고침과는 다른, 클릭에 종속된 1회성 재실행).
+                st.rerun()
 
 
 for category, indicators in INDICATORS[country_code].items():
@@ -126,6 +162,8 @@ else:
         st.warning(f"{indicator['label']}: {e}")
     else:
         st.markdown(f"**{indicator['label']}**")
+        if indicator.get("description"):
+            st.caption(indicator["description"])
         st.line_chart(series)
         st.caption(f"데이터 기준일: {series.index[-1]:%Y-%m} · {len(series)}개 관측치")
 
