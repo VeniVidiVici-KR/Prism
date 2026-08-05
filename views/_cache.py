@@ -27,6 +27,8 @@ from valley.company_summary import summarize_company_overview as _summarize_comp
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
 from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
+from valley.market_snapshot import get_market_snapshot as _get_market_snapshot
+from valley.market_snapshot import get_us_market_state as _get_us_market_state
 from valley.peers import get_annual_dividend_history as _get_annual_dividend_history
 from valley.peers import get_historical_per_pbr as _get_historical_per_pbr
 from valley.peers import get_peer_tickers as _get_peer_tickers
@@ -94,6 +96,20 @@ def get_roe_history(ticker: str, years: int = 3):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_annual_dividend_history(ticker: str, years: int = 5):
     return _get_annual_dividend_history(ticker, years)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_market_snapshot() -> list[dict]:
+    """⚠️ ttl=300(5분) — 이 프로젝트 다른 캐시들(1시간·1일)보다 훨씬 짧다. 페이지 진입만으로
+    자동 조회되는 유일한 예외라(다른 모든 조회는 버튼 클릭 시에만), 신선도와 호출 부담을
+    절충하는 값으로 짧게 잡았다 — 매크로 지표(86400)와 혼동해 늘리지 않는다."""
+    return _get_market_snapshot()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_us_market_state() -> str | None:
+    """market_snapshot과 같은 ttl(300)로 맞춘다 — 장 상태도 시세만큼 자주 바뀔 수 있다."""
+    return _get_us_market_state()
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
