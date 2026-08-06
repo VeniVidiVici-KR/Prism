@@ -114,6 +114,30 @@ streamlit run app.py
 - **혼합 지표**: CPI 상승률(YoY %)·실질금리·M2/명목GDP·수출 증가율·한미 정책금리차 같은 조합 지표.
 - **지표 겹쳐보기**: 단위가 다른 지표 2~3개를 골라 겹치는 기간의 첫 관측치=100으로 지수화해 한 차트에 비교한다.
 
+## 테스트
+
+```bash
+pip install -r requirements-dev.txt   # 개발 전용(pytest) — 앱 실행에는 필요 없다
+pytest
+```
+
+`pytest`만 치면(별도 `PYTHONPATH` 설정 불필요, `pytest.ini`가 처리) 아래를 검증한다:
+
+- **`tests/test_valuation.py`·`test_composite.py`·`test_macro.py`**: `valley/`의 순수 계산 함수 단위테스트(DCF/WACC/CAPM/실효세율/성장률 계산 등). 네트워크를 타지 않아 빠르고 항상 안정적이다.
+- **`tests/test_session_keys.py`**: 4개 페이지의 `st.session_state` 키가 서로 겹치지 않는지 정적으로 검사한다(소스를 실행하지 않고 텍스트만 분석). 과거 Comparison 페이지 크래시의 근본 원인이 페이지 간 세션 키 충돌이었어서, 이 회귀를 자동으로 잡아낸다.
+- **`tests/test_apptest_regression.py`**: `streamlit.testing.v1.AppTest`로 4개 페이지가 실제로 죽지 않는지 확인한다. "최초 진입(버튼 없이 페이지만 여는 상태)" 케이스를 반드시 포함한다 — 과거 크래시가 정확히 이 케이스를 테스트하지 않아 놓쳤던 것이었다.
+
+⚠️ **API 키(.env) 없이도 전부 통과한다** — 이게 CI에 올릴 수 있는 최소 조건이다. 각 페이지는 키가 없으면 죽는 대신 안내 메시지로 대체하도록 이미 설계돼 있고, 테스트도 그 경로를 확인한다.
+
+기본 실행은 실제 외부 API(yfinance/FRED/ECOS/DART/EDGAR/KRX)를 호출하지 않는다 — 자동 로드되는 유일한 예외(Stock Research 상단의 시장 스냅샷)만 mock 처리한다. 실제 티커를 조회하는 전체 플로우(느리고 네트워크·KRX 로그인 여부에 좌우됨)는 `@pytest.mark.network`로 분리해뒀다:
+
+```bash
+pytest -m network      # 전체 플로우만
+pytest -m ""           # 마커 필터를 풀고 전부(기본+network) 실행
+```
+
+⚠️ AI 요약·해설(`ai_commentary`/`edgar_summary`/`company_summary`)을 실제로 호출하는 테스트는 없다 — "AI 생성하기" 버튼을 누르는 테스트 자체가 없어 API 크레딧이 소모되지 않는다.
+
 ## 구조
 
 ### 엔트리포인트 / UI
