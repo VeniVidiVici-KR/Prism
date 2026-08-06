@@ -164,6 +164,72 @@ def get_latest_free_cash_flow(ticker: str) -> float:
     return float(get_free_cash_flow_history(ticker, years=1).iloc[-1])
 
 
+def get_fcff_inputs(ticker: str) -> dict:
+    """정식 DCF(FCFF→WACC)에 필요한 최근 회계연도 재무 항목을 yfinance에서 가져온다.
+
+    ⚠️ 실측 확인(AAPL/MSFT/005930): 대차대조표의 "Total Debt" 행이 세 종목 모두 그대로
+    존재해(Long Term Debt + 단기차입을 직접 합칠 필요 없음) 그걸 총부채로 쓴다. 현금은
+    "Cash Cash Equivalents And Short Term Investments"(단기투자자산 포함, 세 종목 모두
+    존재)를 우선 쓴다 — 순부채 계산에 단기투자자산을 포함하는 게 통상적이다. 손익계산서의
+    "Interest Expense"는 실측 결과 세 종목 모두 **양수(비용의 크기, 부호 반전 없음)**로
+    온다(MSFT 30.51억달러, 삼성전자 6,057.83억원) — 단, ⚠️ AAPL 최신 회계연도(2025-09-30)는
+    이 행 자체가 NaN이다(Interest Expense/Interest Expense Non Operating/Net Interest
+    Income 전부 NaN, quarterly·TTM에서도 확인 안 됨 — Apple이 최근 10-K에서 이자비용을
+    "Other income/(expense), net"에 합쳐 별도로 공시하지 않는 것으로 보인다. 2021년 이전
+    데이터엔 있었지만 4년 이상 지난 값을 지금 끌어쓰는 건 왜곡이 크다고 판단해 폴백하지
+    않았다). 이 함수는 interest_expense가 없으면 None으로 반환하니, 호출부(밸류에이션
+    로직)가 "정식 DCF 계산 불가"를 명확히 알려야 한다 — 0으로 조용히 대체하면 부채가 있는
+    종목에서 이자비용을 0으로 가정하는 셈이 되어 WACC·FCFF 둘 다 조용히 틀려진다.
+
+    반환: {"total_debt", "cash_and_st_investments", "interest_expense"(None 가능),
+    "tax_provision"(None 가능), "pretax_income"(None 가능), "as_of"}.
+    """
+    t = yf.Ticker(ticker)
+    bs = t.balance_sheet
+    fin = t.financials
+
+    if bs is None or bs.empty:
+        raise TickerNotFoundError(f"'{ticker}'의 대차대조표 데이터를 찾을 수 없습니다.")
+    if fin is None or fin.empty:
+        raise TickerNotFoundError(f"'{ticker}'의 손익계산서 데이터를 찾을 수 없습니다.")
+
+    bs_col = bs.columns[0]
+    fin_col = fin.columns[0]
+
+    total_debt_row = find_row(bs, ["Total Debt"])
+    if total_debt_row is None:
+        raise TickerNotFoundError(f"'{ticker}'의 총부채(Total Debt) 항목을 찾을 수 없습니다.")
+    total_debt_raw = total_debt_row.get(bs_col)
+    # ⚠️ 무차입 기업은 이 행 값이 NaN으로 올 수 있다(합산할 부채 항목 자체가 없어서) — 0으로
+    # 취급한다(실제 조회 실패가 아니라 "부채가 없다"는 정상적인 상태이므로 에러가 아니다).
+    total_debt = 0.0 if pd.isna(total_debt_raw) else float(total_debt_raw)
+
+    cash_row = find_row(bs, ["Cash Cash Equivalents And Short Term Investments", "Cash And Cash Equivalents"])
+    cash_raw = cash_row.get(bs_col) if cash_row is not None else None
+    cash = 0.0 if cash_raw is None or pd.isna(cash_raw) else float(cash_raw)
+
+    interest_row = find_row(fin, ["Interest Expense", "Interest Expense Non Operating"])
+    interest_raw = interest_row.get(fin_col) if interest_row is not None else None
+    interest_expense = None if interest_raw is None or pd.isna(interest_raw) else float(interest_raw)
+
+    tax_row = find_row(fin, ["Tax Provision"])
+    tax_raw = tax_row.get(fin_col) if tax_row is not None else None
+    tax_provision = None if tax_raw is None or pd.isna(tax_raw) else float(tax_raw)
+
+    pretax_row = find_row(fin, ["Pretax Income"])
+    pretax_raw = pretax_row.get(fin_col) if pretax_row is not None else None
+    pretax_income = None if pretax_raw is None or pd.isna(pretax_raw) else float(pretax_raw)
+
+    return {
+        "total_debt": total_debt,
+        "cash_and_st_investments": cash,
+        "interest_expense": interest_expense,
+        "tax_provision": tax_provision,
+        "pretax_income": pretax_income,
+        "as_of": bs_col,
+    }
+
+
 PRICE_HISTORY_PERIODS = ["1mo", "3mo", "6mo", "1y", "3y", "5y", "max"]
 
 

@@ -9,6 +9,7 @@ valley/ 계층은 Streamlit 의존성이 없는 순수 조회/계산 레이어�
 import streamlit as st
 
 from valley.data import get_company_snapshot as _get_company_snapshot
+from valley.data import get_fcff_inputs as _get_fcff_inputs
 from valley.data import get_financial_history as _get_financial_history
 from valley.data import get_free_cash_flow_history as _get_free_cash_flow_history
 from valley.data import get_latest_free_cash_flow as _get_latest_free_cash_flow
@@ -71,6 +72,11 @@ def get_latest_free_cash_flow(ticker: str) -> float:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_free_cash_flow_history(ticker: str, years: int = 4):
     return _get_free_cash_flow_history(ticker, years)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_fcff_inputs(ticker: str) -> dict:
+    return _get_fcff_inputs(ticker)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

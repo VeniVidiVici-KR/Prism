@@ -150,6 +150,239 @@ def simplified_dcf(
     }
 
 
+# 실효세율 계산이 불가하거나(적자·데이터 없음) 이상치일 때 쓰는 법정세율 폴백.
+# ⚠️ 통화 기준으로만 나뉜다(더 세분화된 국가별 세율까지는 이번 범위 밖) — 미국 연방 법인세
+# 21%(2018년 TCJA 이후 고정), 한국 법인세 최고구간 24%(과세표준 3천억원 초과 구간 기준,
+# 대형 상장사 대부분 이 구간에 해당해 근사치로 채택).
+DEFAULT_STATUTORY_TAX_RATE = {"USD": 0.21, "KRW": 0.24}
+
+
+def compute_effective_tax_rate(tax_provision: float | None, pretax_income: float | None, currency: str) -> dict:
+    """실효세율 = 법인세비용 / 세전이익.
+
+    ⚠️ 가드: 세전이익이 0 이하이거나 두 값 중 하나라도 없으면 계산 자체가 무의미해 법정세율로
+    폴백한다(어떤 값을 썼는지 반환값의 "source"/"warning"으로 호출부가 화면에 표시해야 한다 —
+    조용히 쓰면 안 된다). 법인세가 음수(세무상 환급)면 세율이 음수가 되는데, 이 경우 폴백하지
+    않고 그 값을 그대로 반환하되 경고 플래그를 세운다(실제로 있을 수 있는 상황이라 값을
+    숨기지 않되 이상치임을 알린다). 상식 범위(0~50%)를 벗어나도 마찬가지로 경고만 세운다.
+
+    Returns:
+        {"rate": float, "source": "effective"|"fallback", "warning": str|None}
+    """
+    fallback_rate = DEFAULT_STATUTORY_TAX_RATE.get(currency, 0.21)
+    if pretax_income is None or tax_provision is None or pretax_income <= 0:
+        return {
+            "rate": fallback_rate,
+            "source": "fallback",
+            "warning": (
+                f"세전이익이 0 이하이거나 데이터가 없어 실효세율을 계산할 수 없습니다 — "
+                f"법정세율({fallback_rate * 100:.0f}%)로 대체했습니다."
+            ),
+        }
+
+    rate = tax_provision / pretax_income
+    if rate < 0:
+        return {
+            "rate": rate,
+            "source": "effective",
+            "warning": f"법인세가 환급(음수)되어 실효세율이 음수({rate * 100:.1f}%)입니다 — 일시적 세무 항목일 수 있습니다.",
+        }
+    if rate > 0.5:
+        return {
+            "rate": rate,
+            "source": "effective",
+            "warning": f"실효세율이 상식 범위(0~50%)를 벗어난 {rate * 100:.1f}%입니다 — 일시적 세무 항목의 영향일 수 있습니다.",
+        }
+    return {"rate": rate, "source": "effective", "warning": None}
+
+
+def compute_cost_of_debt(interest_expense: float, total_debt: float) -> dict:
+    """세전 부채비용 = 이자비용 / 총부채.
+
+    ⚠️ 총부채가 0 이하면 무차입 기업이라 나눗셈 자체가 불가하다 — rate=None을 반환해
+    호출부(compute_wacc)가 "WACC=COE" 경로로 처리하게 한다(0으로 나누거나 0%로 얼버무리지
+    않는다). 결과가 30%를 넘으면 경고를 세운다 — 부채가 기중 크게 변한 종목에서는 기말
+    총부채 하나로 나누는 단순 계산이 왜곡될 수 있다.
+
+    Returns:
+        {"rate": float|None, "warning": str|None}
+    """
+    if total_debt <= 0:
+        return {"rate": None, "warning": None}
+
+    rate = interest_expense / total_debt
+    warning = None
+    if rate > 0.30:
+        warning = f"세전 부채비용이 상식 범위를 크게 벗어난 {rate * 100:.1f}%입니다 — 부채가 기중 크게 변했을 수 있습니다."
+    return {"rate": rate, "warning": warning}
+
+
+def capm_coe(risk_free_rate: float, beta: float, risk_premium: float) -> float:
+    """CAPM: COE = 무위험이자율 + 베타 × 리스크프리미엄(ERP).
+
+    ⚠️ 기존 suggest_coe()의 "Rf + ERP" 자동제안은 이 식에서 베타=1을 대입한 것과 동치다 —
+    CAPM은 그 확장(베타로 개별 종목의 시장 대비 민감도를 반영)이라는 걸 호출부가 화면
+    설명에 밝혀야 한다.
+    """
+    return risk_free_rate + beta * risk_premium
+
+
+def compute_wacc(
+    market_cap: float, total_debt: float, coe: float, cost_of_debt_pretax: float | None, tax_rate: float
+) -> dict:
+    """WACC = E/(D+E)×COE + D/(D+E)×세전부채비용×(1−세율).
+
+    ⚠️ cost_of_debt_pretax가 None(무차입, compute_cost_of_debt가 total_debt<=0일 때 반환하는
+    값)이면 부채 항이 정의되지 않으므로 WACC=COE로 두고 unlevered=True를 표시한다 — 이
+    사실을 호출부가 화면에 안내해야 한다(조용히 COE와 같은 값을 "WACC"라고만 보여주면
+    사용자가 계산이 실제로 일어났다고 오해할 수 있다).
+
+    Returns:
+        {"wacc", "weight_equity", "weight_debt", "after_tax_cost_of_debt"(None 가능), "unlevered"}
+    """
+    if market_cap is None or market_cap <= 0:
+        raise ValueError("시가총액이 유효하지 않아 WACC를 계산할 수 없습니다.")
+
+    if total_debt <= 0 or cost_of_debt_pretax is None:
+        return {
+            "wacc": coe,
+            "weight_equity": 1.0,
+            "weight_debt": 0.0,
+            "after_tax_cost_of_debt": None,
+            "unlevered": True,
+        }
+
+    total_capital = market_cap + total_debt
+    weight_equity = market_cap / total_capital
+    weight_debt = total_debt / total_capital
+    after_tax_cost_of_debt = cost_of_debt_pretax * (1 - tax_rate)
+    wacc = weight_equity * coe + weight_debt * after_tax_cost_of_debt
+
+    return {
+        "wacc": wacc,
+        "weight_equity": weight_equity,
+        "weight_debt": weight_debt,
+        "after_tax_cost_of_debt": after_tax_cost_of_debt,
+        "unlevered": False,
+    }
+
+
+class FcffInputsUnavailableError(Exception):
+    """정식 DCF(FCFF→WACC)에 필요한 재무 항목이 없어 계산 자체를 시작할 수 없을 때 발생."""
+
+
+def fcf_to_fcff(fcf: float, interest_expense: float | None, tax_rate: float) -> float:
+    """FCFF = FCF + 이자비용×(1−세율).
+
+    기존 FCF(get_free_cash_flow_history)는 영업활동현금흐름(OCF) 기반이라 이자비용이 이미
+    차감된 "주주 몫"에 가까운 현금흐름이다. WACC로 할인하려면 기업 전체(채권자+주주) 몫인
+    FCFF가 필요해 이자비용의 세후 효과를 되돌려야 한다.
+
+    ⚠️ 이 전환을 빠뜨리고 기존 FCF를 그대로 WACC로 할인하면 이자를 현금흐름(FCF 안에 이미
+    반영)과 할인율(WACC의 부채 항)에서 이중으로 차감하는 셈이 되어 기업가치가 과소평가된다.
+
+    ⚠️ interest_expense가 None(실측: AAPL 최신 회계연도처럼 10-K가 이자비용을 별도로
+    공시하지 않는 종목이 실제로 있다)이면 이 전환 자체를 할 수 없으므로
+    FcffInputsUnavailableError를 던진다 — 0으로 조용히 대체하면 부채가 있는 종목에서
+    이자비용이 없다고 가정하는 것과 같아 위험하다.
+    """
+    if interest_expense is None:
+        raise FcffInputsUnavailableError(
+            "이 종목은 최근 재무제표에 이자비용이 별도로 공시되지 않아(예: 일부 기업이 "
+            "'기타손익'에 통합 공시) 정식 DCF(FCFF→WACC)를 계산할 수 없습니다. 간이 방식을 "
+            "이용해주세요."
+        )
+    return fcf + interest_expense * (1 - tax_rate)
+
+
+def fcff_dcf(
+    latest_fcff: float,
+    growth_rate: float,
+    wacc: float,
+    terminal_growth: float,
+    years: int,
+    total_debt: float,
+    cash_and_st_investments: float,
+    shares_outstanding: float,
+    growth_rate_terminal: float | None = None,
+) -> dict:
+    """정식 DCF: FCFF를 WACC로 할인해 EV를 구하고, 순부채를 차감해 Equity Value를 산출한다.
+
+    simplified_dcf와 투영 로직(2-stage 선형 감쇠, Gordon Growth terminal value)은 완전히
+    동일하되, 할인율이 WACC, 현금흐름이 FCFF, 산출물이 EV(→순부채 차감 후 Equity)라는 점이
+    다르다. ⚠️ simplified_dcf는 건드리지 않고 이 함수를 별도로 둔다(회귀 방지, 두 방식이
+    서로 다른 코드 경로를 타야 한쪽 수정이 다른 쪽에 영향을 주지 않는다).
+
+    ⚠️ 순부채(= total_debt − cash_and_st_investments)가 음수(순현금)이면 equity_value가
+    enterprise_value보다 커진다 — 정상이므로 0으로 막지 않는다.
+
+    Args:
+        latest_fcff: 최근 회계연도 FCFF(fcf_to_fcff 결과)
+        growth_rate: 1년차(초기) 연간 FCFF 성장률
+        wacc: 가중평균자본비용(compute_wacc 결과)
+        terminal_growth: 영구성장률
+        years: 투영 연수
+        total_debt: 총부채
+        cash_and_st_investments: 현금 및 단기투자자산
+        shares_outstanding: 발행주식수
+        growth_rate_terminal: N년차(말기) 연간 FCFF 성장률. None이면 growth_rate와 동일.
+
+    Returns:
+        연도별 투영 결과, terminal value, EV, 순부채, Equity, 주당 내재가치를 담은 dict
+    """
+    if wacc <= terminal_growth:
+        raise ValueError("WACC는 영구성장률보다 커야 합니다.")
+    if shares_outstanding is None or shares_outstanding <= 0:
+        raise ValueError("발행주식수 정보가 유효하지 않습니다.")
+    if latest_fcff <= 0:
+        raise ValueError(
+            "최근 FCFF(기업잉여현금흐름)가 0 이하라 DCF 계산의 의미가 없습니다. "
+            "대규모 투자·적자 등으로 일시적으로 마이너스일 수 있어 이 모델로는 평가하기 어렵습니다."
+        )
+
+    growth_rate_initial = growth_rate
+    growth_rate_terminal = growth_rate_terminal if growth_rate_terminal is not None else growth_rate_initial
+
+    yearly = []
+    fcff = latest_fcff
+    pv_sum = 0.0
+    for year in range(1, years + 1):
+        fraction = (year - 1) / (years - 1) if years > 1 else 0.0
+        year_growth = growth_rate_initial + (growth_rate_terminal - growth_rate_initial) * fraction
+        fcff = fcff * (1 + year_growth)
+        present_value = fcff / ((1 + wacc) ** year)
+        pv_sum += present_value
+        yearly.append(
+            {"year": year, "projected_fcff": fcff, "present_value": present_value, "growth_rate": year_growth}
+        )
+
+    terminal_value = (fcff * (1 + terminal_growth)) / (wacc - terminal_growth)
+    pv_terminal_value = terminal_value / ((1 + wacc) ** years)
+
+    enterprise_value = pv_sum + pv_terminal_value
+    net_debt = total_debt - cash_and_st_investments
+    equity_value = enterprise_value - net_debt
+    intrinsic_value_per_share = equity_value / shares_outstanding
+
+    return {
+        "yearly": yearly,
+        "terminal_value": terminal_value,
+        "pv_terminal_value": pv_terminal_value,
+        "enterprise_value": enterprise_value,
+        "net_debt": net_debt,
+        "equity_value": equity_value,
+        "intrinsic_value_per_share": intrinsic_value_per_share,
+        "assumptions": {
+            "growth_rate": growth_rate_initial,
+            "growth_rate_initial": growth_rate_initial,
+            "growth_rate_terminal": growth_rate_terminal,
+            "wacc": wacc,
+            "terminal_growth": terminal_growth,
+            "years": years,
+        },
+    }
+
+
 def implied_growth_rate(
     latest_fcf: float,
     discount_rate: float,
