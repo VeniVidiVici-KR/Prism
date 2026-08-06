@@ -1,5 +1,7 @@
 # PRISM
 
+[![tests](https://github.com/VeniVidiVici-KR/Prism/actions/workflows/tests.yml/badge.svg)](https://github.com/VeniVidiVici-KR/Prism/actions/workflows/tests.yml)
+
 월가아재의 Valley AI(valley.town)에서 아이디어를 얻은 개인 투자 리서치 앱.
 
 핵심 흐름: **티커 입력 → 회사 개요·주가·재무 추이 확인 → Peer Group/PER·PBR 비교 → 업종에 맞는 밸류에이션(제조업 DCF / 금융업 P·B×ROE·DDM) → 공시 확인 및 AI 한국어 요약 → AI 해설**.
