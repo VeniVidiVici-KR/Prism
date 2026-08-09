@@ -201,30 +201,44 @@ with st.sidebar:
         value=False,
         help="1년차는 초기 성장률, 마지막 연도는 말기 성장률이 되도록 연도별로 선형 보간합니다.",
     )
+    # ⚠️ 상한은 100%까지만 — NVDA 실측(최근 4개년 FCF CAGR 193.9%, 기저효과가 아니라 매년
+    # 증가율이 609.6%→125.2%→58.9%로 체계적으로 감속하는 실제 고성장)처럼 슬라이더 표현이
+    # 필요한 종목이 있지만, 200%까지 열면 5년 투영 시 FCF가 수백~수천 배로 발산해 내재가치가
+    # 무의미해진다. 100%도 5년이면 32배라 이미 극단적인 상한이다.
+    _GROWTH_RATE_MAX = 1.0
+    # ⚠️ 세션 키로 관리한다 — 아래 DCF 섹션의 "과거 FCF 증가율(CAGR)을 가정으로 쓰기" 버튼이
+    # 이 값을 반영하기 위해서다. 감쇠 on/off는 초기 성장률을 서로 다른 세션 키로 관리한다
+    # (sr_growth_rate_initial_fade vs sr_growth_rate_initial) — 두 모드의 기본값(0.12 vs
+    # 0.08)이 다르고, 토글할 때 한쪽 모드에서 조정한 값이 다른 모드로 새어 들어가면 혼란스럽다.
+    # 버튼이 실제로 어느 키를 채울지는 지금 시점의 use_fade로 정해진다. 페이지 접두어
+    # 규칙(sr_)을 지켜 다른 페이지의 세션 키와 겹치지 않게 한다.
+    # ⚠️ Streamlit은 key가 있는 위젯이 "이미 렌더링된 뒤"에는 같은 run 안에서 그 session_state를
+    # 직접 못 바꾸게 막는다(StreamlitAPIException). 그래서 버튼은 이 키를 직접 건드리지 않고,
+    # 이 슬라이더가 렌더링되기 "전"인 여기서만 sr_growth_rate_pending(있다면)을 실제 값에
+    # 반영한 뒤 지운다.
+    _growth_initial_key = "sr_growth_rate_initial_fade" if use_fade else "sr_growth_rate_initial"
+    _growth_initial_default = 0.12 if use_fade else 0.08  # 기존 각 모드의 기본값 그대로
+    if "sr_growth_rate_pending" in st.session_state:
+        st.session_state[_growth_initial_key] = st.session_state["sr_growth_rate_pending"]
+        del st.session_state["sr_growth_rate_pending"]
+    elif _growth_initial_key not in st.session_state:
+        st.session_state[_growth_initial_key] = _growth_initial_default
+
     if use_fade:
-        growth_rate_initial = st.slider("초기 성장률", 0.0, 0.30, 0.12, 0.01, format="%.2f")
-        growth_rate_terminal = st.slider("말기 성장률", 0.0, 0.30, 0.04, 0.01, format="%.2f")
-    else:
-        # ⚠️ 세션 키로 관리한다 — 아래 DCF 섹션의 "과거 FCF 증가율(CAGR)을 가정으로 쓰기"
-        # 버튼이 이 값을 반영하기 위해서다. 페이지 접두어 규칙(sr_)을 지켜 다른 페이지의
-        # 세션 키와 겹치지 않게 한다.
-        # ⚠️ Streamlit은 key가 있는 위젯이 "이미 렌더링된 뒤"에는 같은 run 안에서 그
-        # session_state를 직접 못 바꾸게 막는다(StreamlitAPIException). 그래서 버튼은
-        # sr_growth_rate_initial을 직접 건드리지 않고, 이 슬라이더가 렌더링되기 "전"인
-        # 여기서만 sr_growth_rate_pending(있다면)을 실제 값에 반영한 뒤 지운다.
-        if "sr_growth_rate_pending" in st.session_state:
-            st.session_state.sr_growth_rate_initial = st.session_state["sr_growth_rate_pending"]
-            del st.session_state["sr_growth_rate_pending"]
-        elif "sr_growth_rate_initial" not in st.session_state:
-            st.session_state.sr_growth_rate_initial = 0.08  # 기존 기본값 그대로
         growth_rate_initial = st.slider(
-            "연간 FCF 성장률", 0.0, 0.30, step=0.01, format="%.2f", key="sr_growth_rate_initial"
+            "초기 성장률", 0.0, _GROWTH_RATE_MAX, step=0.01, format="%.2f", key=_growth_initial_key
+        )
+        growth_rate_terminal = st.slider("말기 성장률", 0.0, _GROWTH_RATE_MAX, 0.04, 0.01, format="%.2f")
+    else:
+        growth_rate_initial = st.slider(
+            "연간 FCF 성장률", 0.0, _GROWTH_RATE_MAX, step=0.01, format="%.2f", key=_growth_initial_key
         )
         growth_rate_terminal = None
-        clamp_notice = st.session_state.get("sr_growth_clamp_notice")
-        if clamp_notice:
-            st.info(clamp_notice)
-            st.session_state.sr_growth_clamp_notice = None
+
+    clamp_notice = st.session_state.get("sr_growth_clamp_notice")
+    if clamp_notice:
+        st.info(clamp_notice)
+        st.session_state.sr_growth_clamp_notice = None
     use_auto_coe = st.checkbox(
         "COE 자동제안 사용 (무위험이자율 + 리스크프리미엄)",
         value=False,
@@ -1164,6 +1178,13 @@ else:
 
     if growth["cagr"] is not None:
         st.metric(f"최근 {len(growth['yearly'])}개년 FCF 연평균 증가율 (CAGR)", f"{growth['cagr'] * 100:.1f}%")
+        if growth["cagr"] > 1.0 and not use_fade:
+            st.caption(
+                "⚠️ 과거 CAGR이 매우 높습니다. 이 성장률을 투영 기간 내내 유지하는 가정은 "
+                "비현실적일 수 있습니다 — 아래 표에서 연도별 증가율이 감속 중인지 확인하고, "
+                "사이드바의 '성장률 감쇠 사용'을 켜서 초기→말기 성장률을 나눠 설정하는 것을 "
+                "권장합니다."
+            )
     else:
         st.warning(f"연평균 증가율(CAGR) 계산 불가: {growth['cagr_reason']}")
     if growth["has_non_positive_year"]:
@@ -1182,24 +1203,25 @@ else:
     ).set_index("연도")
     st.dataframe(growth_df, width="stretch")
 
-    if use_fade:
-        st.caption(
-            "2-stage(성장률 감쇠) 모드에서는 이 버튼을 지원하지 않습니다 — 감쇠를 끄면 "
-            "과거 CAGR을 성장률 가정으로 바로 반영할 수 있습니다."
-        )
-    elif growth["cagr"] is None:
+    # ⚠️ 감쇠 모드에서도 이 버튼을 지원한다 — NVDA처럼 CAGR이 극단적으로 높은 종목일수록
+    # 감쇠(초기→말기 선형 감소)가 가장 필요한데, 이전엔 감쇠 모드에서만 버튼을 꺼둬 오히려
+    # 거꾸로였다. 감쇠 모드에서는 "초기 성장률"에만 적용하고(말기 성장률은 손대지 않는다),
+    # 반영 대상 세션 키는 위 사이드바에서 use_fade에 따라 이미 정해져 있다
+    # (sr_growth_rate_initial_fade vs sr_growth_rate_initial).
+    _cagr_button_label = "이 값(CAGR)을 초기 성장률로 쓰기" if use_fade else "이 값(CAGR)을 DCF 가정으로 쓰기"
+    if growth["cagr"] is None:
         st.button(
-            "이 값(CAGR)을 DCF 가정으로 쓰기", disabled=True,
+            _cagr_button_label, disabled=True,
             help="CAGR을 계산할 수 없어 비활성화되었습니다.",
         )
-    elif st.button("이 값(CAGR)을 DCF 가정으로 쓰기"):
+    elif st.button(_cagr_button_label):
         raw_cagr = growth["cagr"]
-        clamped = max(0.0, min(0.30, raw_cagr))
-        # sr_growth_rate_initial 위젯이 이미 이번 run에서 렌더링된 뒤라 여기서 직접
+        clamped = max(0.0, min(1.0, raw_cagr))
+        # sr_growth_rate_initial(_fade) 위젯이 이미 이번 run에서 렌더링된 뒤라 여기서 직접
         # 못 바꾼다 — pending 키에 남겨두면 다음 run의 슬라이더 렌더링 "전"에 반영된다.
         st.session_state.sr_growth_rate_pending = clamped
         st.session_state.sr_growth_clamp_notice = (
-            f"과거 CAGR {raw_cagr * 100:.1f}%가 슬라이더 범위(0~30%)를 벗어나 "
+            f"과거 CAGR {raw_cagr * 100:.1f}%가 슬라이더 범위(0~100%)를 벗어나 "
             f"{clamped * 100:.1f}%로 설정되었습니다."
             if clamped != raw_cagr
             else None

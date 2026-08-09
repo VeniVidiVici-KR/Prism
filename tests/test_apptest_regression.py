@@ -118,6 +118,74 @@ def test_stock_research_fcff_wacc_method_msft():
 
 
 @pytest.mark.network
+def test_stock_research_growth_rate_slider_clamp_and_fade_button_nvda():
+    """NVDA는 최근 4개년 FCF CAGR이 193.9%로 슬라이더 상한(100%)을 크게 넘는 대표 케이스다.
+    (1) 비감쇠 모드에서 버튼 클릭 시 100%로 clamp되고 고성장 안내 캡션이 뜨는지,
+    (2) 감쇠 모드로 전환하면 버튼이 활성화되고 "초기 성장률"에만 적용되는지(말기 성장률은
+    그대로) 확인한다 — 이전엔 감쇠 모드에서 이 버튼이 비활성이었는데, 감쇠가 가장 필요한
+    고성장주에서 못 쓰는 게 거꾸로였던 문제를 고친 라운드다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=120)
+    at.run()
+    at.text_input[0].input("NVDA")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run()
+    assert at.exception == []
+
+    cagr_metrics = [m for m in at.metric if "CAGR" in m.label]
+    assert cagr_metrics, "NVDA CAGR 지표가 렌더링되지 않음"
+    assert float(cagr_metrics[0].value.rstrip("%")) > 100  # 실측 193.9%대 — 상한을 넘는 케이스
+
+    captions_text = "\n".join(c.value for c in at.caption)
+    assert "감쇠" in captions_text and "비현실적" in captions_text, "고성장 안내 캡션이 없음"
+
+    btn = next(b for b in at.button if b.label == "이 값(CAGR)을 DCF 가정으로 쓰기")
+    btn.click()
+    at.run()
+    assert at.exception == []
+    slider = next(s for s in at.slider if s.label == "연간 FCF 성장률")
+    assert slider.value == pytest.approx(1.0)  # 100%로 clamp
+    assert any("범위(0~100%)" in i.value for i in at.info)
+
+    fade_checkbox = next(cb for cb in at.checkbox if "감쇠" in cb.label)
+    fade_checkbox.set_value(True)
+    at.run()
+    assert at.exception == []
+
+    fade_btn = next(b for b in at.button if b.label == "이 값(CAGR)을 초기 성장률로 쓰기")
+    assert not fade_btn.disabled
+    fade_btn.click()
+    at.run()
+    assert at.exception == []
+
+    init_slider = next(s for s in at.slider if s.label == "초기 성장률")
+    term_slider = next(s for s in at.slider if s.label == "말기 성장률")
+    assert init_slider.value == pytest.approx(1.0)  # 초기 성장률에 clamp된 CAGR이 반영됨
+    assert term_slider.value == pytest.approx(0.04)  # 말기 성장률은 기본값 그대로(건드리지 않음)
+
+
+@pytest.mark.network
+def test_stock_research_fade_extreme_growth_dcf_does_not_diverge():
+    """감쇠 모드에서 초기 100% · 말기 10%처럼 극단적인 조합을 넣어도 DCF가 예외 없이 유한한
+    값으로 계산되는지 확인한다(발산 방지 회귀)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=120)
+    at.run()
+    at.text_input[0].input("NVDA")
+    fade_checkbox = next(cb for cb in at.checkbox if "감쇠" in cb.label)
+    fade_checkbox.set_value(True)
+    at.run()
+    next(s for s in at.slider if s.label == "초기 성장률").set_value(1.0)
+    next(s for s in at.slider if s.label == "말기 성장률").set_value(0.10)
+    at.run()
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run()
+    assert at.exception == []
+
+    dcf_metric = next(m for m in at.metric if m.label == "주당 내재가치 (DCF)")
+    value_str = dcf_metric.value.replace("$", "").replace(",", "").replace("₩", "")
+    assert float(value_str) > 0  # 발산(inf/NaN)하지 않고 유한한 양수
+
+
+@pytest.mark.network
 def test_screener_full_flow():
     at = AppTest.from_file(str(VIEWS_DIR / "screener.py"), default_timeout=120)
     at.run()

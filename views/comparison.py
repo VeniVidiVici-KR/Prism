@@ -109,7 +109,10 @@ st.caption(
 )
 
 dcol1, dcol2, dcol3, dcol4 = st.columns(4)
-dcf_growth_rate = dcol1.slider("연간 FCF 성장률", 0.0, 0.30, 0.08, 0.01, format="%.2f", key="cmp_growth_rate")
+
+# ⚠️ 상한 100% — Stock Research 페이지와 동일 범위로 맞췄다(NVDA 등 고성장주 실측 CAGR을
+# 표현하려면 30%로는 부족하지만, 200%까지 열면 5년 투영 시 FCF가 발산해 무의미해진다).
+dcf_growth_rate = dcol1.slider("연간 FCF 성장률", 0.0, 1.0, 0.08, 0.01, format="%.2f", key="cmp_growth_rate")
 dcf_discount_rate = dcol2.slider("요구수익률 (COE)", 0.03, 0.20, 0.10, 0.01, format="%.2f", key="cmp_discount_rate")
 dcf_terminal_growth = dcol3.slider("영구성장률", 0.0, 0.05, 0.025, 0.005, format="%.3f", key="cmp_terminal_growth")
 dcf_years = dcol4.slider("투영 연수", 3, 10, 5, 1, key="cmp_years")
