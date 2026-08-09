@@ -142,6 +142,91 @@ INDICATORS = {
             {"key": "US_PAYEMS", "label": "비농업고용", "fred_id": "PAYEMS"},
             {"key": "US_ICSA", "label": "신규 실업수당 청구건수", "fred_id": "ICSA"},
         ],
+        # ⚠️ 매달 첫 금요일 발표되는 고용보고서(Employment Situation)의 세부 지표. 기존
+        # "고용"(실업률/비농업고용/신규청구)과 분리한 이유: (1) 업종별 분해까지 넣으면 16개라
+        # 기존 카테고리에 합치면 버튼이 과밀해진다. (2) 이 카테고리는 서로 다른 두 표본조사가
+        # 섞여 있다는 걸 항목마다 강조해야 하는 특수한 성격이라(사업체조사 Establishment/CES
+        # vs 가계조사 Household/CPS — 표본·정의가 달라 같은 달에도 어긋날 수 있음),
+        # description에 매번 출처를 명시한다. 실측(2026-07 기준) 전부 최신, 전부 계절조정(SA) —
+        # FRED series 페이지의 "Units:" 메타데이터를 직접 조회해 확인했다(추정 아님). 단위는
+        # 고용자수 계열이 천 명, 비율 계열이 %, 임금만 달러(수준, 원계열) — 임금은 수준 자체가
+        # 아니라 변화율(MoM/YoY)로 봐야 하는 지표라 아래 "고용보고서 한눈에 보기" 뷰에서
+        # 변환한다.
+        # ⚠️ USPRIV(민간고용)는 아래 11개 업종 분해와 같은 집합이 아니다 — 정부를 제외한 민간
+        # 합계라 업종별로 또 나누면 중복 계상이 된다. 업종별 분해(US_NFP_*)는 정부를 포함한
+        # BLS supersector 11개로 배타적·망라적이다. 실측 자기검증: 11개 업종 전월비 증감의 합이
+        # PAYEMS 전월비 증감과 소수점 이내로 거의 일치(2026-07 기준 -22.9천 명 vs -23.0천 명,
+        # BLS가 시리즈별로 개별 계절조정해 생기는 정상적 오차)했고, PAYEMS-USPRIV 전월비 증감이
+        # USGOVT 전월비 증감과 정확히 일치(-53.0천 명)함을 확인했다.
+        "고용 세부": [
+            {
+                "key": "US_PRIV_PAYEMS", "label": "민간고용", "fred_id": "USPRIV",
+                "description": "비농업 민간부문 고용자 수 · 사업체조사(Establishment/CES) · 정부 제외",
+            },
+            {
+                "key": "US_CIVPART", "label": "경제활동참가율", "fred_id": "CIVPART",
+                "description": "가계조사(Household/CPS) · 비농업고용과 표본·정의가 다른 별개 조사",
+            },
+            {
+                "key": "US_EMRATIO", "label": "고용률", "fred_id": "EMRATIO",
+                "description": "가계조사(Household/CPS) · 생산가능인구 대비 취업자 비율",
+            },
+            {
+                "key": "US_U6RATE", "label": "광의실업률(U-6)", "fred_id": "U6RATE",
+                "description": "가계조사(Household/CPS) · 실업자+한계근로자+경제적 사유 시간제 근로자 포함",
+            },
+            {
+                "key": "US_AVG_HOURLY_EARNINGS", "label": "평균 시간당 임금", "fred_id": "CES0500000003",
+                "description": "사업체조사(CES) · 달러 수준(원계열) · MoM·YoY 변화율은 '고용보고서 한눈에 보기'에서",
+            },
+            {
+                "key": "US_NFP_MINING", "label": "광업·벌목", "fred_id": "CES1021000001",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_CONSTRUCTION", "label": "건설", "fred_id": "USCONS",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_MANUFACTURING", "label": "제조업", "fred_id": "MANEMP",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_TRADE_TRANSPORT_UTIL", "label": "무역·운송·유틸리티", "fred_id": "USTPU",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_INFO", "label": "정보", "fred_id": "USINFO",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_FINANCIAL", "label": "금융활동", "fred_id": "USFIRE",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_PROF_BIZ", "label": "전문·기업서비스", "fred_id": "USPBS",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_EDU_HEALTH", "label": "교육·보건(민간)", "fred_id": "USEHS",
+                "description": (
+                    "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES) · "
+                    "공공 교육·보건 종사자는 '정부' 항목에 포함(중복 아님)"
+                ),
+            },
+            {
+                "key": "US_NFP_LEISURE", "label": "레저·접객", "fred_id": "USLAH",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_OTHER_SERVICES", "label": "기타서비스", "fred_id": "USSERV",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES)",
+            },
+            {
+                "key": "US_NFP_GOVERNMENT", "label": "정부", "fred_id": "USGOVT",
+                "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES) · 공공 교육·보건 종사자 포함",
+            },
+        ],
         "성장·소비": [
             {"key": "US_GDPC1", "label": "실질 GDP", "fred_id": "GDPC1"},
             {"key": "US_GDP_NOMINAL", "label": "명목 GDP", "fred_id": "GDP"},

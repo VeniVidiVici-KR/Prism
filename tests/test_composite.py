@@ -1,9 +1,10 @@
-"""valley/composite.py 순수 함수 단위테스트 (yoy_percent, compute_cpi_contributions)."""
+"""valley/composite.py 순수 함수 단위테스트 (yoy_percent, compute_cpi_contributions,
+mom_change, mom_percent — 고용보고서 라운드에서 추가)."""
 
 import pandas as pd
 import pytest
 
-from valley.composite import compute_cpi_contributions, yoy_percent
+from valley.composite import compute_cpi_contributions, mom_change, mom_percent, yoy_percent
 
 
 def test_yoy_percent_basic():
@@ -41,3 +42,31 @@ def test_compute_cpi_contributions_sums_to_expected_total():
 def test_compute_cpi_contributions_single_component():
     df, total = compute_cpi_contributions([{"label": "단일", "weight_pct": 100.0, "yoy": 5.0}])
     assert total == pytest.approx(5.0)
+
+
+def test_mom_change_basic():
+    idx = pd.date_range("2026-01-01", periods=4, freq="MS")
+    # 고용자 수(천 명) 계열을 흉내: 절대 수준 차분(YoY %가 아님)이어야 한다.
+    series = pd.Series([158700.0, 158780.0, 158858.0, 158835.0], index=idx)
+    result = mom_change(series)
+    assert len(result) == 3  # 4개월 데이터 -> 전월 대비 차분 3개
+    assert result.iloc[0] == pytest.approx(80.0)
+    assert result.iloc[-1] == pytest.approx(-23.0)  # 감소도 그대로 음수로 나와야 한다
+
+
+def test_mom_change_first_observation_dropped():
+    idx = pd.date_range("2026-01-01", periods=2, freq="MS")
+    series = pd.Series([100.0, 105.0], index=idx)
+    result = mom_change(series)
+    assert len(result) == 1
+    assert result.iloc[0] == pytest.approx(5.0)
+
+
+def test_mom_percent_matches_yoy_percent_with_periods_one():
+    idx = pd.date_range("2026-01-01", periods=3, freq="MS")
+    series = pd.Series([37.41, 37.49, 37.60], index=idx)
+    mom = mom_percent(series)
+    equivalent = yoy_percent(series, periods=1)
+    pd.testing.assert_series_equal(mom, equivalent)
+    # 평균 시간당 임금처럼 소폭(0.1~0.4%대) 변화가 나오는지도 확인.
+    assert 0.0 < mom.iloc[-1] < 1.0

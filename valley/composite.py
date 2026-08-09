@@ -50,6 +50,26 @@ def yoy_percent(series: pd.Series, periods: int = 12) -> pd.Series:
     return (series.pct_change(periods) * 100).dropna()
 
 
+def mom_change(series: pd.Series, periods: int = 1) -> pd.Series:
+    """월별 시계열의 전월 대비 절대 증감(수준 차분)을 반환한다.
+
+    고용자 수(천 명) 같은 "수준" 계열은 YoY %가 아니라 절대 증감(천 명)으로 보는 게 시장
+    표준이다 — 퍼센트 변화는 이미 규모가 큰 기저값(1억 5천만 명대) 때문에 월별 증감의 체감
+    규모를 가려버린다. 지역 연준 서베이의 point-diff(전월 대비 포인트 차이)와 같은 이유로,
+    확산지수가 아니라 고용자 수 계열에도 차분을 그대로 적용한다.
+    """
+    return series.diff(periods).dropna()
+
+
+def mom_percent(series: pd.Series) -> pd.Series:
+    """전월 대비 변화율(%) — yoy_percent(periods=1)과 동일한 계산이지만, 호출부에서 "전월대비"라는
+    의도를 이름으로 드러내기 위한 별칭이다. 평균 시간당 임금처럼 "수준(달러)"이 아니라
+    변화율로 봐야 하는 지표는 MoM·YoY 둘 다 필요한데, 기존 yoy_percent가 이미 범용
+    N개월전 대비 함수라 periods=1만 넘기면 새 계산 로직 없이 그대로 재사용할 수 있다.
+    """
+    return yoy_percent(series, periods=1)
+
+
 def compute_cpi_contributions(components: list[dict]) -> tuple[pd.DataFrame, float]:
     """구성항목별 (가중치, YoY)로 헤드라인 기여도(%p)를 분해한다.
 
