@@ -1,6 +1,7 @@
 """Macro Indicator — 미국/한국 매크로 지표(물가·금리·고용·성장·통화) 조회 페이지."""
 
 import os
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from valley.composite import (
     mom_percent,
     yoy_percent,
 )
+from valley.edgar import EdgarDataError, describe_form_type
 from valley.macro import (
     INDICATORS,
     KR_CPI_MAJOR_ITEM_CODES,
@@ -27,6 +29,7 @@ from valley.macro import (
     get_indicator_series,
     normalize_indexed,
 )
+from views._cache import get_cik, get_filings_by_type
 from views._charts import contribution_bar_chart, pie_chart
 
 MAX_OVERLAY_INDICATORS = 3
@@ -87,6 +90,25 @@ NFP_SECTOR_KEYS = [
     "US_NFP_OTHER_SERVICES", "US_NFP_GOVERNMENT",
 ]
 
+# "신용 스프레드 비교" 뷰 전용 — 하이일드(위험지표 카테고리)와 투자등급(신용시장 카테고리)을
+# 함께 겹쳐본다. 둘 다 옵션조정스프레드(OAS, %) 동일 단위라 국가부채/GDP 비교 섹션과 같은
+# 방식으로 정규화 없이 원값을 그대로 겹친다 — valley/macro.py의 "신용시장" 카테고리 주석 참고.
+CREDIT_SPREAD_COMPARISON_KEYS = {
+    "하이일드(HY)": "US_HY_SPREAD",
+    "투자등급 전체(IG)": "US_IG_SPREAD",
+    "AA": "US_IG_SPREAD_AA",
+    "BBB": "US_IG_SPREAD_BBB",
+}
+
+# ⚠️ "주요 기업 채권 발행 동향" 뷰 전용 — DEFAULT_UNIVERSE(Screener)와 같은 패턴으로, 사용자가
+# 이 목록을 직접 편집해 관심 있는 발행 주체로 바꿀 수 있게 상수로 노출한다. 초기 목록은 AI
+# 데이터센터 capex 주체인 빅테크(GOOGL/MSFT/AMZN/META/ORCL/NVDA/AAPL)에 데이터센터 REIT인
+# EQIX·DLR(실제 시설을 짓는 회사채 발행 당사자, AI 인프라 조달과 가장 직접 연결됨)을 더했다.
+# 9개 전부 실측으로 EDGAR 424B 조회가 됨을 확인했다(GOOGL/AMZN/ORCL/NVDA/EQIX/DLR은 최근
+# 몇 주~두 달 이내 발행 기록, MSFT/AAPL은 상대적으로 오래전 — 최근엔 회사채보다 자체
+# 현금흐름으로 조달 중일 가능성).
+BOND_ISSUANCE_UNIVERSE = ["GOOGL", "MSFT", "AMZN", "META", "ORCL", "NVDA", "AAPL", "EQIX", "DLR"]
+
 load_dotenv(override=True)
 
 st.title("🌐 Macro Indicator")
@@ -105,6 +127,8 @@ if st.session_state.get("macro_country") != country_code:
     st.session_state.macro_cpi_breakdown_loaded = False
     st.session_state.macro_regional_fed_loaded = False
     st.session_state.macro_employment_report_loaded = False
+    st.session_state.macro_credit_spread_loaded = False
+    st.session_state.macro_bond_issuance_loaded = False
 
 if country_code == "KR" and not os.environ.get("ECOS_API_KEY"):
     st.info(
@@ -460,6 +484,120 @@ if country_code == "US":
                         f"({uspriv_change:+,.1f}천 명) = {implied_govt:+,.1f}천 명 vs 정부 업종 증감 "
                         f"{govt_row['전월비 증감(천 명)']:+,.1f}천 명."
                     )
+
+if country_code == "US":
+    st.divider()
+    st.header("신용시장 — 하이일드 vs 투자등급 스프레드")
+    st.caption(
+        "AI 데이터센터 등 대규모 투자를 회사채로 조달하는 기업들의 조달 여건 변화를 신용 사이클 "
+        "신호로 봅니다. 하이일드(투기등급)와 투자등급 스프레드를 함께 보면 신용 국면이 뚜렷해 "
+        "집니다 — 둘 다 옵션조정스프레드(OAS, %) 동일 단위라, 위 한미 국가부채/GDP 비교와 같은 "
+        "방식으로 정규화 없이 원값을 그대로 겹쳐 그립니다."
+    )
+
+    if st.button("신용 스프레드 비교 보기", key="btn_credit_spread_compare"):
+        st.session_state.macro_credit_spread_loaded = True
+
+    if st.session_state.get("macro_credit_spread_loaded"):
+        spread_series = {}
+        spread_failed = []
+        for label, key in CREDIT_SPREAD_COMPARISON_KEYS.items():
+            try:
+                spread_series[label] = _load_series(key)
+            except MacroDataError as e:
+                spread_failed.append(f"{label}: {e}")
+
+        if spread_failed:
+            st.warning("일부 항목을 제외했습니다: " + " / ".join(spread_failed))
+
+        if not spread_series:
+            st.info("표시할 수 있는 항목이 없습니다.")
+        else:
+            spread_rows = [
+                {"구분": label, "최신값(%)": s.iloc[-1], "기준일": s.index[-1].strftime("%Y-%m-%d")}
+                for label, s in spread_series.items()
+            ]
+            st.dataframe(
+                pd.DataFrame(spread_rows).set_index("구분").style.format({"최신값(%)": "{:.2f}%"}),
+                width="stretch",
+            )
+            aligned = pd.concat(spread_series, axis=1, join="inner")
+            if aligned.empty:
+                st.warning("선택한 항목들 사이에 겹치는 기간이 없습니다.")
+            else:
+                st.line_chart(aligned)
+                st.caption(
+                    f"겹치는 구간({aligned.index[0]:%Y-%m-%d} ~ {aligned.index[-1]:%Y-%m-%d}) · "
+                    "모두 OAS(%) 동일 단위라 정규화하지 않았습니다."
+                )
+
+    st.divider()
+    st.subheader("주요 기업 채권 발행 동향")
+    st.caption(
+        "위 스프레드가 '시장 전체' 조달 여건을 보여준다면, 이 표는 AI 인프라 투자 주체들의 "
+        "'개별 실제 조달 활동'입니다 — SEC EDGAR의 발행설명서(424B 계열)를 기업별로 모아 "
+        "최신순으로 봅니다."
+    )
+    st.caption(f"대상 기업(코드 상단 BOND_ISSUANCE_UNIVERSE에서 편집 가능): {', '.join(BOND_ISSUANCE_UNIVERSE)}")
+    st.caption(
+        "⚠️ 424B는 '발행이 있었다'는 사실과 최종 조건 문서를 알려주지만, 청약 수요(주문잔고· "
+        "가이던스 대비 스프레드 축소폭)는 이 공시에 담기지 않습니다 — 유료 데이터 영역입니다. "
+        "발행 금액·만기·쿠폰 등 상세 조건은 원문 링크를 열어 확인하세요(본문 AI 요약은 이번 "
+        "범위 밖입니다)."
+    )
+
+    if st.button("주요 기업 채권 발행 동향 불러오기", key="btn_bond_issuance"):
+        st.session_state.macro_bond_issuance_loaded = True
+
+    if st.session_state.get("macro_bond_issuance_loaded"):
+        issuance_rows = []
+        issuance_failed = []
+        zero_result_tickers = []
+        # ⚠️ 기업 하나 조회 실패해도 나머지는 계속 진행한다(Comparison 종목별 격리와 동일
+        # 원칙). SEC 속도 제한을 배려해 기업 사이에 짧게 쉰다(문서 자체는 st.cache_data로
+        # 캐싱되어 재실행·재클릭 시엔 이 루프조차 다시 돌지 않는다).
+        for i, ticker in enumerate(BOND_ISSUANCE_UNIVERSE):
+            if i > 0:
+                time.sleep(0.2)
+            try:
+                cik = get_cik(ticker)
+                filings = get_filings_by_type(cik, "424B", limit=5)
+            except EdgarDataError as e:
+                issuance_failed.append(f"{ticker}: {e}")
+                continue
+            if not filings:
+                zero_result_tickers.append(ticker)
+                continue
+            for f in filings:
+                issuance_rows.append(
+                    {
+                        "기업": ticker,
+                        "접수일": f["filing_date"],
+                        "유형": describe_form_type(f["form"]),
+                        "설명": f["description"] or "-",
+                        "원문": f["url"],
+                    }
+                )
+
+        if issuance_failed:
+            st.warning("일부 기업 조회에 실패했습니다(네트워크/CIK 매핑 문제일 수 있음): " + " / ".join(issuance_failed))
+        if zero_result_tickers:
+            st.caption(
+                "⚠️ 조회는 성공했지만 424B 발행 이력이 없는 기업: " + ", ".join(zero_result_tickers)
+                + " — 최근 회사채를 발행하지 않았을 수 있습니다(조회 실패와는 다른 상황입니다)."
+            )
+
+        if not issuance_rows:
+            st.info("표시할 수 있는 발행 공시가 없습니다.")
+        else:
+            issuance_rows.sort(key=lambda r: r["접수일"], reverse=True)
+            st.dataframe(
+                pd.DataFrame(issuance_rows),
+                width="stretch",
+                hide_index=True,
+                column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
+            )
+            st.caption(f"기업당 최근 5건까지, 총 {len(issuance_rows)}건 · 최신순 통합 정렬(기업 구분 없음).")
 
 st.divider()
 st.header("CPI 구성항목 한눈에 보기")

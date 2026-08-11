@@ -235,3 +235,93 @@ def test_macro_indicator_employment_report_full_flow():
     assert {"출처", "최근 값", "전월", "변화", "기준월"} <= set(headline_df.columns)
     sector_df = next(df for df in at.dataframe if "전월비 증감(천 명)" in df.value.columns).value
     assert len(sector_df) <= 11  # 정부 포함 11개 업종, USPRIV는 미포함이어야 한다
+
+
+@pytest.mark.network
+def test_macro_indicator_credit_spread_comparison_full_flow():
+    """신용시장 라운드 PART A — 하이일드(위험지표 카테고리)와 투자등급(신용시장 카테고리)
+    스프레드를 겹쳐본다. 등급이 낮을수록 스프레드가 커지는 정상적인 신용 위계
+    (AAA<AA<A<BBB<하이일드)가 실측으로 유지되는지, 특히 하이일드가 투자등급 전체보다 항상
+    높은지를 고정해둔다(신용 국면 판독의 핵심 전제)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    btn = next(b for b in at.button if b.label == "신용 스프레드 비교 보기")
+    btn.click()
+    at.run()
+    assert at.exception == []
+
+    spread_df = next(df for df in at.dataframe if "최신값(%)" in df.value.reset_index().columns).value
+    assert {"하이일드(HY)", "투자등급 전체(IG)", "AA", "BBB"} <= set(spread_df.index)
+    hy = spread_df.loc["하이일드(HY)", "최신값(%)"]
+    ig = spread_df.loc["투자등급 전체(IG)", "최신값(%)"]
+    bbb = spread_df.loc["BBB", "최신값(%)"]
+    aa = spread_df.loc["AA", "최신값(%)"]
+    assert hy > ig  # 하이일드 > 투자등급 전체 — 신용 위계의 핵심 전제
+    assert bbb > aa  # 등급이 낮을수록(BBB) 스프레드가 큼(AA보다)
+    assert hy > 0 and ig > 0  # 스프레드는 항상 양수
+
+
+@pytest.mark.network
+def test_macro_indicator_bond_issuance_full_flow():
+    """신용시장 라운드 PART B — 여러 기업의 424B(발행설명서) 공시를 통합 조회한다.
+    (1) 자동 로드 없이 버튼 클릭 시에만 조회되는지, (2) 재실행 시 캐시로 재조회 없이
+    동일 결과가 유지되는지(mock으로 실제 SEC 호출 횟수 확인), (3) 개별 기업 실패가 나머지를
+    막지 않는지(격리)를 확인한다."""
+    from unittest.mock import patch
+
+    import valley.edgar as edgar_mod
+    from views.macro_indicator import BOND_ISSUANCE_UNIVERSE
+
+    calls: list[str] = []
+    _orig = edgar_mod.get_filings_by_type
+
+    def _counting(cik, form_type, limit=10):
+        calls.append(cik)
+        return _orig(cik, form_type, limit)
+
+    with patch("valley.edgar.get_filings_by_type", side_effect=_counting):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=120)
+        at.run()
+        assert len(calls) == 0  # 자동 로드 금지
+
+        btn = next(b for b in at.button if b.label == "주요 기업 채권 발행 동향 불러오기")
+        btn.click()
+        at.run(timeout=120)
+        assert at.exception == []
+        assert len(calls) <= len(BOND_ISSUANCE_UNIVERSE)  # 기업당 최대 1회(실패해도 재시도 없음)
+
+        calls.clear()
+        at.run(timeout=120)
+        assert len(calls) == 0  # 재실행 시 캐시 히트, 추가 호출 없음
+
+    issuance_df = next(df for df in at.dataframe if "기업" in df.value.columns).value
+    assert set(issuance_df["기업"]) <= set(BOND_ISSUANCE_UNIVERSE)
+    # 최신순 통합 정렬 확인
+    dates = issuance_df["접수일"].tolist()
+    assert dates == sorted(dates, reverse=True)
+
+
+@pytest.mark.network
+def test_stock_research_edgar_securities_issuance_category_googl():
+    """EDGAR 범주 재분류 회귀 — GOOGL은 424B 발행이 활발해(실측 확인) "증권 발행" 범주로
+    필터링하면 424B/FWP만 나오고, 이 범주가 기존 "주주총회·기타"에서 분리됐어도 나머지
+    필터 UI(범주 옵션·기본 선택·전체 보기)는 그대로 동작해야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=120)
+    at.run()
+    at.text_input[0].input("GOOGL")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run()
+    assert at.exception == []
+
+    multiselect = next(m for m in at.multiselect if m.label == "공시 유형")
+    assert "증권 발행" in multiselect.options
+    assert multiselect.value == ["실적·정기보고", "중요 사건"]  # 기본 선택은 그대로(회귀)
+
+    multiselect.set_value(["증권 발행"])
+    at.run()
+    assert at.exception == []
+    filtered = next((df for df in at.dataframe if "유형" in df.value.columns), None)
+    if filtered is not None:
+        forms = set(filtered.value["유형"])
+        assert forms, "증권 발행 필터 결과가 비어있음"
+        assert all(f.startswith("424B") or f == "FWP" for f in forms)

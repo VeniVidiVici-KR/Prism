@@ -137,6 +137,39 @@ INDICATORS = {
                 "description": "무역가중, 2006년 1월=100 기준",
             },
         ],
+        # ⚠️ 하이일드 스프레드(US_HY_SPREAD)는 기존 "위험지표"에 그대로 둔다 — 여기서는 그
+        # 위에 "투자등급" 층을 추가해 신용 국면을 두 층으로 본다(AI 데이터센터 등 대규모
+        # 투자를 회사채로 조달하는 기업들의 조달 여건 신호). 실측(2026-08-07 기준) 전부
+        # 최신·%(OAS) 단위 확인 — 이름이 비슷한 "Effective Yield" 계열(BAMLC0A0CMEY 등, 실측
+        # 5.36%)은 OAS가 아니라 절대 쓰지 않는다(시리즈 설명에 "Option-Adjusted Spread"가
+        # 명시된 것만 채택). 등급별을 다 넣으면 카탈로그가 비대해져(AAA/AA/A/BBB 4종),
+        # 투자등급 전체 + AA + BBB 3개로 추렸다 — 하이퍼스케일러(GOOGL/MSFT/AAPL 등)는
+        # AA~A 등급대, 오라클처럼 차입 의존도가 높은 기업은 BBB 근처에 있어 이 두 등급이
+        # AI 인프라 조달 여건을 보는 데 실용적이다(AAA/A는 생략해도 정보 손실이 작다).
+        # 실측 값(2026-08-07): 하이일드 2.70% > BBB 0.97% > AA 0.57% > 투자등급 전체 0.78%
+        # (AA가 투자등급 전체 평균보다 낮은 건 정상 — 전체 평균에 BBB 비중이 크게 반영됨).
+        # 등급이 낮을수록 스프레드가 커지는 정상적인 신용 위계(AAA<AA<A<BBB<HY)를 확인했다.
+        # ⚠️ 별도 "신용시장" 카테고리로 신설한다 — "위험지표"는 이미 VIX·BEI·실질금리·달러
+        # 인덱스 등 성격이 다른 5개 지표가 있어 여기 더 얹으면 카테고리가 과밀해지고, 이
+        # 라운드가 "신용시장"을 하이일드+투자등급+기업 발행 동향을 아우르는 하나의 축으로
+        # 명시적으로 요구했다. 아래 macro_indicator.py의 "신용 스프레드 비교" 섹션에서
+        # 위험지표의 US_HY_SPREAD와 이 카테고리의 투자등급 스프레드를 함께 겹쳐 본다(둘 다
+        # 이미 %(OAS) 동일 단위라 국가부채/GDP 비교와 같은 방식으로 정규화 없이 겹친다) —
+        # 기존 "지표 겹쳐보기" 오버레이 후보에도 카테고리 구분 없이 전부 자동 포함된다.
+        "신용시장": [
+            {
+                "key": "US_IG_SPREAD", "label": "투자등급 전체 스프레드", "fred_id": "BAMLC0A0CM",
+                "description": "ICE BofA US Corporate OAS · 신용등급 전체(AAA~BBB) 평균",
+            },
+            {
+                "key": "US_IG_SPREAD_AA", "label": "AA 등급 스프레드", "fred_id": "BAMLC0A2CAA",
+                "description": "ICE BofA AA US Corporate OAS · 하이퍼스케일러(빅테크) 신용등급대",
+            },
+            {
+                "key": "US_IG_SPREAD_BBB", "label": "BBB 등급 스프레드", "fred_id": "BAMLC0A4CBBB",
+                "description": "ICE BofA BBB US Corporate OAS · 투자등급 최하단, 차입 의존 기업대",
+            },
+        ],
         "고용": [
             {"key": "US_UNRATE", "label": "실업률", "fred_id": "UNRATE"},
             {"key": "US_PAYEMS", "label": "비농업고용", "fred_id": "PAYEMS"},
