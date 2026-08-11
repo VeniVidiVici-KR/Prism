@@ -27,6 +27,8 @@ from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.company_summary import summarize_company_overview as _summarize_company_overview
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
 from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
+from valley.kofia import get_credit_balance_history as _get_credit_balance_history
+from valley.kofia import get_securities_market_capital_history as _get_securities_market_capital_history
 from valley.krx import get_kr_ticker_directory as _get_kr_ticker_directory
 from valley.market_snapshot import get_market_snapshot as _get_market_snapshot
 from valley.market_snapshot import get_us_market_state as _get_us_market_state
@@ -208,6 +210,20 @@ def summarize_company_overview(company_name: str, business_summary: str, engine:
     거의 불변이라(회사 사업 서술은 자주 안 바뀜) company_name+business_summary가 사실상
     ticker 역할을 한다 — 같은 종목·같은 엔진으로 재클릭해도 API를 다시 부르지 않는다."""
     return _summarize_company_overview(company_name, business_summary, engine)
+
+
+@st.cache_data(ttl=43200, show_spinner=False)
+def get_credit_balance_history(num_rows: int = 1500) -> list[dict]:
+    """일별 데이터라 ttl을 하루(86400)보다는 짧게, 그렇다고 시세처럼 자주 바뀌는 값도
+    아니라(실측 결과 KOFIA API 자체가 며칠 지연되어 갱신된다) ttl=3600처럼 짧게 잡을 이유도
+    없다 — 반나절(43200)로 절충해 같은 날 재클릭·재실행 시 불필요한 재호출을 막는다."""
+    return _get_credit_balance_history(num_rows)
+
+
+@st.cache_data(ttl=43200, show_spinner=False)
+def get_securities_market_capital_history(num_rows: int = 1500) -> list[dict]:
+    """get_credit_balance_history와 동일한 ttl 기준(일별 데이터, 며칠 지연 갱신)."""
+    return _get_securities_market_capital_history(num_rows)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

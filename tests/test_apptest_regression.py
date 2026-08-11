@@ -77,7 +77,10 @@ def test_pages_do_not_crash_when_env_keys_missing(monkeypatch):
     """⚠️ CI 대비 — .env가 아예 없거나 키가 비어 있어도(ECOS/DART/OpenAI/Gemini/KRX 등)
     페이지가 죽지 않고 안내 메시지로 대체돼야 한다. 각 페이지는 load_dotenv(override=True)를
     다시 부르므로, dotenv 자체를 no-op으로 막아 실제 .env 파일이 있어도 무시되게 한다."""
-    for var in ("ECOS_API_KEY", "DART_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "BLS_API_KEY", "KRX_ID", "KRX_PW"):
+    for var in (
+        "ECOS_API_KEY", "DART_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "BLS_API_KEY",
+        "KRX_ID", "KRX_PW", "KOFIA_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     with patch("dotenv.load_dotenv", return_value=True), \
          patch("valley.market_snapshot.get_market_snapshot", return_value=[]), \
@@ -325,3 +328,94 @@ def test_stock_research_edgar_securities_issuance_category_googl():
         forms = set(filtered.value["유형"])
         assert forms, "증권 발행 필터 결과가 비어있음"
         assert all(f.startswith("424B") or f == "FWP" for f in forms)
+
+
+@pytest.mark.network
+def test_macro_indicator_kofia_credit_balance_full_flow():
+    """KOFIA 신용공여 라운드 — 일별·코스피/코스닥 구분 신용공여 데이터가 예외 없이 렌더링되고,
+    (1) 자동 로드 없이 버튼 클릭 시에만 조회되는지, (2) 재실행 시 캐시로 재조회 없이 유지되는지
+    (mock으로 실제 KOFIA 호출 횟수 확인), (3) 전체=유가증권+코스닥 정합성이 실제 응답에서도
+    유지되는지 확인한다."""
+    import valley.kofia as kofia_mod
+
+    calls = {"credit": 0, "capital": 0}
+    _orig_credit = kofia_mod.get_credit_balance_history
+    _orig_capital = kofia_mod.get_securities_market_capital_history
+
+    def _counting_credit(num_rows=1500):
+        calls["credit"] += 1
+        return _orig_credit(num_rows)
+
+    def _counting_capital(num_rows=1500):
+        calls["capital"] += 1
+        return _orig_capital(num_rows)
+
+    # ⚠️ views/_cache.py는 "from valley.kofia import get_credit_balance_history as
+    # _get_credit_balance_history"로 별칭을 모듈 임포트 시점에 한 번 바인딩해둔다 — 그 시점이
+    # 이 테스트보다 먼저(다른 테스트가 macro_indicator.py를 먼저 로드해 views._cache를 이미
+    # 임포트해버린 뒤)라면, valley.kofia 쪽을 아무리 patch해도 이미 바인딩된 별칭에는 반영되지
+    # 않는다(실측으로 겪은 순서 의존성 버그 — 단독 실행 시엔 우연히 통과하고 전체 스위트에서만
+    # 실패했다). 그래서 실제로 호출되는 별칭 쪽(views._cache._get_credit_balance_history)을
+    # 직접 patch한다 — 임포트 순서와 무관하게 항상 정확히 가로챈다.
+    with patch("views._cache._get_credit_balance_history", side_effect=_counting_credit), \
+         patch("views._cache._get_securities_market_capital_history", side_effect=_counting_capital):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        country_radio = next(r for r in at.radio if r.label == "국가")
+        country_radio.set_value("한국")
+        at.run()
+        assert calls == {"credit": 0, "capital": 0}  # 자동 로드 금지
+
+        btn = next(b for b in at.button if b.label == "증시 주변자금 / 신용공여 불러오기")
+        btn.click()
+        at.run(timeout=90)
+        assert at.exception == []
+        assert calls == {"credit": 1, "capital": 1}
+
+        at.run(timeout=90)
+        assert calls == {"credit": 1, "capital": 1}  # 재실행 시 캐시 히트, 추가 호출 없음
+
+    credit_df = next(df for df in at.dataframe if "신용거래융자 전체" in df.value.index).value
+    assert "최근 값(조원)" in credit_df.columns
+    # 신용거래융자: 전체 = 유가증권 + 코스닥 (실측으로 확인된 정합성, valley/kofia.py 참고)
+    whl = credit_df.loc["신용거래융자 전체", "최근 값(조원)"]
+    scrs = credit_df.loc["신용거래융자 유가증권", "최근 값(조원)"]
+    kosdaq = credit_df.loc["신용거래융자 코스닥", "최근 값(조원)"]
+    assert whl == pytest.approx(scrs + kosdaq, abs=0.01)
+
+
+@pytest.mark.network
+def test_macro_indicator_kofia_ecos_cross_check():
+    """ECOS 901Y056(월별, KR_MARGIN_LOAN_MONTHLY)과 KOFIA API(일별)를 교차검증한다 — 실측으로
+    확인한 정의 동일성(ECOS는 KOFIA 일별 시계열의 월말 스냅샷)이 유지되는지, 최소한 두 소스의
+    최신값이 같은 자릿수(조 원 단위) 규모인지로 회귀를 건다(매일 정확히 같은 날짜가 아니므로
+    완전 일치는 확인하지 않는다 — 정의 관계는 valley/macro.py의 "신용융자" 카테고리 주석과
+    2026-08 라운드 실측 보고에서 이미 확정함)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run()
+
+    ecos_btn = next(b for b in at.button if "신용융자 잔고" in b.label)
+    ecos_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+    ecos_caption = next(c for c in at.caption if "관측치" in c.value and "데이터 기준일" in c.value)
+    assert "202" in ecos_caption.value  # 최신 연도가 표시되는지(빈 시계열이 아님)
+
+
+def test_macro_indicator_kofia_missing_key_no_crash(monkeypatch):
+    """⚠️ KOFIA_API_KEY가 없어도 앱이 죽지 않고 명확한 안내로 대체돼야 한다(DART/ECOS와 동일
+    패턴). load_dotenv가 실제 .env를 다시 읽어 키를 되살리는 걸 막기 위해 no-op으로 막는다
+    (test_pages_do_not_crash_when_env_keys_missing과 동일한 이유)."""
+    monkeypatch.delenv("KOFIA_API_KEY", raising=False)
+    with patch("dotenv.load_dotenv", return_value=True):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        country_radio = next(r for r in at.radio if r.label == "국가")
+        country_radio.set_value("한국")
+        at.run()
+        assert at.exception == []
+        assert not [b for b in at.button if "신용공여" in b.label]
+        assert any("KOFIA_API_KEY" in i.value for i in at.info)
