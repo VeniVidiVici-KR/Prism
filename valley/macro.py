@@ -46,6 +46,18 @@ US_CPI_COMPONENT_BLS_IDS = {
     "US_CPI_CORE_SERVICES": "CUUR0000SASLE",
 }
 
+# MoM(전월비) 기여도 분해 전용 — 위 US_CPI_COMPONENT_BLS_IDS와 같은 논리적 카테고리 키를
+# 그대로 써서(예: "US_CPI_FOOD"), 그 카테고리의 계절조정(SA) 버전 INDICATORS 카탈로그 key로
+# 연결한다. ⚠️ 가중치(상대중요도)는 계절조정 여부와 무관한 "카테고리" 속성이라, MoM 뷰도
+# US_CPI_COMPONENT_BLS_IDS를 통해 얻은 동일 가중치를 그대로 재사용한다(새로 조회하지 않음) —
+# 값(가격지수)만 SA로 바꿔 쓴다. "물가 세부" 카탈로그의 SA 항목 주석 참고.
+US_CPI_COMPONENT_SA_KEYS = {
+    "US_CPI_FOOD": "US_CPI_FOOD_SA",
+    "US_CPI_ENERGY": "US_CPI_ENERGY_SA",
+    "US_CPI_CORE_GOODS": "US_CPI_CORE_GOODS_SA",
+    "US_CPI_CORE_SERVICES": "US_CPI_CORE_SERVICES_SA",
+}
+
 # 한국: ECOS StatisticItemList가 901Y009(소비자물가지수)의 지출목적별 12개 대분류(A~L)
 # 가중치(WEIGHT 필드)를 실측으로 직접 제공한다(실측: item_code "0"의 WEIGHT="1000" — 1000분비
 # 기준, 12개 대분류 WEIGHT 합계 = 1000.0 정확히 일치 확인). K01(외식)은 K(음식·숙박)의 하위
@@ -111,6 +123,30 @@ INDICATORS = {
             {
                 "key": "US_PCE_SERVICES", "label": "PCE 서비스", "fred_id": "DSERRG3M086SBEA",
                 "description": "PCE 서비스 물가지수 · 계절조정(SA)",
+            },
+            # ⚠️ MoM(전월비) 기여도 분해 전용 — 위 4개 원계열(NSA)과는 다른 계열이다. MoM은
+            # 계절성(여름 전기요금 등)에 크게 좌우돼 NSA로 보면 "이번 달 특이사항"과 매년
+            # 반복되는 계절 패턴이 구분되지 않는다 — 그래서 MoM 뷰에서만 SA를 쓴다(YoY 뷰는
+            # 12개월 차분에서 계절성이 상쇄되므로 그대로 NSA 유지, 위 물가 세부 주석 참고).
+            # 실측(2026-08 라운드, 최신 2026-06) 결과 FRED에 4분할 전부 SA 버전이 존재함을
+            # 확인했다 — 헤드라인 SA는 이미 "물가" 카테고리의 US_CPI(CPIAUCSL)로 등록돼 있어
+            # 별도 추가하지 않는다. ⚠️ 이 4개는 위 원계열 4개와 절대 같은 화면에서 섞지 않는다
+            # (views/macro_indicator.py의 US_CPI_COMPONENT_SA_KEYS 매핑·MoM 뷰 참고).
+            {
+                "key": "US_CPI_FOOD_SA", "label": "식품 (계절조정)", "fred_id": "CPIUFDSL",
+                "description": "계절조정(SA) · MoM 기여도 분해 전용 — YoY 비교는 위 원계열 '식품'을 쓴다",
+            },
+            {
+                "key": "US_CPI_ENERGY_SA", "label": "에너지 (계절조정)", "fred_id": "CPIENGSL",
+                "description": "계절조정(SA) · MoM 기여도 분해 전용",
+            },
+            {
+                "key": "US_CPI_CORE_GOODS_SA", "label": "근원 상품 (계절조정)", "fred_id": "CUSR0000SACL1E",
+                "description": "식품·에너지 제외 상품 · 계절조정(SA) · MoM 기여도 분해 전용",
+            },
+            {
+                "key": "US_CPI_CORE_SERVICES_SA", "label": "근원 서비스 (계절조정)", "fred_id": "CUSR0000SASLE",
+                "description": "에너지서비스 제외 · 계절조정(SA) · MoM 기여도 분해 전용",
             },
         ],
         "금리": [

@@ -241,6 +241,67 @@ def test_macro_indicator_employment_report_full_flow():
 
 
 @pytest.mark.network
+def test_macro_indicator_cpi_contribution_mom_view_us():
+    """MoM 기여도 라운드 — 미국 CPI 구성 비중 & 기여도에서 YoY(회귀, 기존 값 유지)와 MoM(신규)을
+    둘 다 확인한다. MoM은 계절조정(SA) 계열을 쓰고, 기여도 합계가 헤드라인 MoM과 크게(30% 초과)
+    벗어나지 않는지(실측: 2026-08 라운드 기준 오차 약 1.9%) 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    btn = next(b for b in at.button if b.label == "구성 비중 & 기여도 불러오기")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    yoy_df = next(df for df in at.dataframe if "YoY(%)" in df.value.reset_index().columns).value
+    assert {"식품", "에너지", "근원 상품", "근원 서비스"} <= set(yoy_df.index)  # 회귀: 기존 YoY 항목 유지
+
+    mode_radio = next(r for r in at.radio if r.label == "기여도 기준")
+    mode_radio.set_value("MoM (전월비)")
+    at.run(timeout=90)
+    assert at.exception == []
+
+    mom_df = next(df for df in at.dataframe if "MoM(%)" in df.value.reset_index().columns).value
+    assert {"식품", "에너지", "근원 상품", "근원 서비스"} <= set(mom_df.index)
+    assert "YoY(%)" not in mom_df.columns  # SA/NSA 뷰가 섞이지 않았는지(별개 표)
+
+    # ⚠️ 이 라운드의 급소 — 기여도 합계가 헤드라인과 크게 어긋나면 경고가 떠야 하고(안 뜨면
+    # 오차가 30% 이내라는 뜻), 자기검증 캡션이 반드시 있어야 한다.
+    assert any("자기검증" in c.value and "MoM" in c.value for c in at.caption)
+    assert any("계절조정" in c.value for c in at.caption)  # SA 사용을 명시했는지
+
+
+@pytest.mark.network
+def test_macro_indicator_cpi_contribution_mom_view_kr():
+    """MoM 기여도 라운드 — 한국은 ECOS에 CPI 계절조정 계열이 없어(실측 확인) 원계열(NSA) 그대로
+    MoM을 본다는 사실이 캡션에 명시되는지, 방향(전기·교통 마이너스, 서비스 플러스 — 제홍이 준
+    증권사 리포트 참고 방향)이 실제로 그렇게 나오는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run()
+
+    btn = next(b for b in at.button if b.label == "구성 비중 & 기여도 불러오기")
+    btn.click()
+    at.run(timeout=90)
+
+    mode_radio = next(r for r in at.radio if r.label == "기여도 기준")
+    mode_radio.set_value("MoM (전월비)")
+    at.run(timeout=90)
+    assert at.exception == []
+
+    mom_df = next(df for df in at.dataframe if "MoM(%)" in df.value.reset_index().columns).value
+    assert "주택, 수도, 전기 및 연료" in mom_df.index
+    # 방향 확인 — 실측(2026-07)으로 전기·수도·주택과 교통이 마이너스 기여를 보였다(리포트의
+    # 전기가스수도 -0.17%p 방향과 일치). 항목 분류가 달라 절대값은 다를 수 있으니 부호만 본다.
+    assert mom_df.loc["주택, 수도, 전기 및 연료", "기여도(%p)"] < 0
+    assert mom_df.loc["교통", "기여도(%p)"] < 0
+
+    assert any("원계열" in c.value and "계절조정" in c.value for c in at.caption)  # NSA 한계 명시
+    assert any("비교하지" in c.value for c in at.caption)  # 미국-한국 비교 금지 캡션
+
+
+@pytest.mark.network
 def test_macro_indicator_credit_spread_comparison_full_flow():
     """신용시장 라운드 PART A — 하이일드(위험지표 카테고리)와 투자등급(신용시장 카테고리)
     스프레드를 겹쳐본다. 등급이 낮을수록 스프레드가 커지는 정상적인 신용 위계

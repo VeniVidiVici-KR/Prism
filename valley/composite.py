@@ -70,22 +70,28 @@ def mom_percent(series: pd.Series) -> pd.Series:
     return yoy_percent(series, periods=1)
 
 
-def compute_cpi_contributions(components: list[dict]) -> tuple[pd.DataFrame, float]:
-    """구성항목별 (가중치, YoY)로 헤드라인 기여도(%p)를 분해한다.
+def compute_cpi_contributions(
+    components: list[dict], rate_key: str = "yoy", rate_label: str = "YoY(%)"
+) -> tuple[pd.DataFrame, float]:
+    """구성항목별 (가중치, 변화율)로 헤드라인 기여도(%p)를 분해한다.
 
-    contribution_i ≈ (weight_pct_i / 100) × yoy_i — 항목별 실측 가중치와 이미 공통 기준월로
-    정렬된 YoY%를 곱하는 단순 가산 근사다(호출부가 정렬/공통월 선택을 책임진다. 이 함수는
-    이미 정렬된 값만 받아 곱셈만 한다). components는 각 {"label", "weight_pct", "yoy"} dict.
-    반환: (표 DataFrame[항목/가중치(%)/YoY(%)/기여도(%p)], 기여도 합계(%p)) — 합계를 헤드라인
-    YoY와 비교하는 자기검증은 호출부(뷰)가 담당한다(차이가 크면 억지로 맞추지 말고 그대로
-    드러내야 하므로, 이 순수 함수는 판단 없이 계산 결과만 반환한다).
+    contribution_i ≈ (weight_pct_i / 100) × rate_i — 항목별 실측 가중치와 이미 공통 기준월로
+    정렬된 변화율(%)을 곱하는 단순 가산 근사다(호출부가 정렬/공통월 선택을 책임진다. 이 함수는
+    이미 정렬된 값만 받아 곱셈만 한다). components는 각 {"label", "weight_pct", rate_key} dict.
+    반환: (표 DataFrame[항목/가중치(%)/{rate_label}/기여도(%p)], 기여도 합계(%p)) — 합계를
+    헤드라인 값과 비교하는 자기검증은 호출부(뷰)가 담당한다(차이가 크면 억지로 맞추지 말고
+    그대로 드러내야 하므로, 이 순수 함수는 판단 없이 계산 결과만 반환한다).
+
+    ⚠️ rate_key/rate_label은 MoM 기여도 라운드에서 추가했다 — 기본값(yoy/YoY(%))이 기존 YoY
+    호출부와 완전히 동일해 회귀가 없다. MoM 기여도 뷰는 rate_key="mom", rate_label="MoM(%)"로
+    같은 함수를 그대로 재사용한다(새 계산 로직을 만들지 않음).
     """
     rows = [
         {
             "항목": c["label"],
             "가중치(%)": c["weight_pct"],
-            "YoY(%)": c["yoy"],
-            "기여도(%p)": c["weight_pct"] / 100 * c["yoy"],
+            rate_label: c[rate_key],
+            "기여도(%p)": c["weight_pct"] / 100 * c[rate_key],
         }
         for c in components
     ]

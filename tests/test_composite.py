@@ -44,6 +44,23 @@ def test_compute_cpi_contributions_single_component():
     assert total == pytest.approx(5.0)
 
 
+def test_compute_cpi_contributions_mom_rate_key_reuses_same_function():
+    """MoM 기여도 라운드에서 추가한 rate_key/rate_label — 기본값(yoy/YoY(%))을 안 넘기면
+    기존 동작과 완전히 동일해야 한다(회귀 없음), rate_key="mom"을 넘기면 그 필드로 계산해야
+    한다(새 계산 로직을 만들지 않고 같은 함수를 재사용)."""
+    components = [
+        {"label": "주택,수도,전기및연료", "weight_pct": 17.16, "mom": -1.062843},
+        {"label": "교통", "weight_pct": 11.06, "mom": -1.648005},
+    ]
+    df, total = compute_cpi_contributions(components, rate_key="mom", rate_label="MoM(%)")
+    assert set(df.columns) == {"항목", "가중치(%)", "MoM(%)", "기여도(%p)"}
+    assert "YoY(%)" not in df.columns
+    expected_total = sum(c["weight_pct"] / 100 * c["mom"] for c in components)
+    assert total == pytest.approx(expected_total)
+    # 실측(2026-08 라운드, 한국 2026-07 MoM)과 근접한 범위인지 고정.
+    assert -0.4 < total < -0.3
+
+
 def test_mom_change_basic():
     idx = pd.date_range("2026-01-01", periods=4, freq="MS")
     # 고용자 수(천 명) 계열을 흉내: 절대 수준 차분(YoY %가 아님)이어야 한다.
