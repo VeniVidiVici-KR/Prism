@@ -206,6 +206,78 @@ INDICATORS = {
                 "description": "ICE BofA BBB US Corporate OAS · 투자등급 최하단, 차입 의존 기업대",
             },
         ],
+        # ⚠️ "기저 인플레(underlying inflation)" — 근원(core)이 식품·에너지를 "범주째" 빼는 것과
+        # 달리, 이 계열들은 매달 극단적으로 오르내린 "품목"을 통계적으로 잘라내거나(trimmed
+        # mean) 중앙값만 취해(median) 일시적 충격에 덜 휘둘리는 물가 추세를 본다. 실측(2026-08
+        # 라운드, 최신 2026-06) 결과 보고:
+        #
+        # 1) 댈러스 연준 Trimmed Mean PCE — 후보 "PCETRIM12M159SFRCA"는 실측 결과 404(존재하지
+        #    않는 ID, 오타로 추정)라 제외했다. 실제 존재하는 정확한 ID는
+        #    PCETRIM12M159SFRBDAL(12개월, "Percent Change from Year Ago")과
+        #    PCETRIM1M158SFRBDAL(1개월 연율, "Percent Change at Annual Rate")이다. 둘 다 FRED
+        #    시리즈 페이지의 "Units:" 메타데이터를 실측 대조해 확인(추정 아님) — 이미 변화율
+        #    (%)로 제공되는 계열이라 yoy_percent()를 적용하면 "변화율의 변화율"이 되어 틀린다.
+        #    둘 다 계절조정(SA). 최신값(2026-06): 12개월 2.23%, 1개월 연율 1.44% — 서로 다른
+        #    시계(smoothing)라 성격이 다르다(1개월 연율이 훨씬 변동성 큼: 2.94→2.53→2.66→1.44).
+        #    시장은 발표일에 1개월 연율(빠른 신호)을, 추세 판단에는 12개월(완만한 신호)을 함께
+        #    쓰므로 － 이 앱이 헤드라인 CPI에도 YoY/MoM 두 시계를 모두 노출하는 것과 같은
+        #    논리로 － 둘 다 등록한다(단, 절대 같은 차트/표에 섞지 않는다).
+        #
+        # 2) 클리블랜드 연준 Median CPI / 16% Trimmed-Mean CPI — 후보 ID(*158*)는 실측 결과
+        #    "Percent Change at Annual Rate"(1개월 연율)로 확인됐고, 사전에 없는지 걱정했던
+        #    12개월 버전도 실측으로 실제 존재함을 확인했다(*159* 접미사,
+        #    "Percent Change from Year Ago") — MEDCPIM159SFRBCLE·TRMMEANCPIM159SFRBCLE. 전부
+        #    계절조정(SA), 전부 이미 변화율(%)로 제공(지수 아님). 최신값(2026-06): 중위 CPI
+        #    12개월 2.71%(1개월 연율 2.11%), 절사평균 CPI 12개월 2.63%(1개월 연율 0.13% —
+        #    1개월 연율의 변동성이 12개월판보다 훨씬 큼을 그대로 보여주는 사례).
+        #
+        # 3) 상식성 대조: 기존 근원 CPI YoY(대략 2~3%대), 근원 PCE YoY(대략 2~3%대)와 나란히
+        #    놓으면 이 6개 시리즈의 12개월판(2.2~2.7%대)이 거의 같은 범위에 들어온다 — 단위·
+        #    계열을 잘못 집었을 때 나타나는 큰 이탈(예: 10배 차이나 마이너스 부호 반전)이 없다.
+        #    자세한 비교는 아래 macro_indicator.py의 "기저 인플레 비교" 섹션 참고.
+        #
+        # ⚠️ 카테고리 배치: "물가 세부"(이미 12개 항목)에 얹으면 과밀해지고, 이 계열들은
+        # "구성항목의 하위 분해"가 아니라 "물가 전체를 다른 방법론으로 재는 대안 지표"라는
+        # 점에서 성격이 달라 별도 "기저 인플레" 카테고리로 신설한다.
+        "기저 인플레": [
+            {
+                "key": "US_TRIMMED_MEAN_PCE_12M", "label": "절사평균 PCE (12개월)",
+                "fred_id": "PCETRIM12M159SFRBDAL",
+                "description": "댈러스 연준 Trimmed Mean PCE · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
+            },
+            {
+                "key": "US_TRIMMED_MEAN_PCE_1M", "label": "절사평균 PCE (1개월연율)",
+                "fred_id": "PCETRIM1M158SFRBDAL",
+                "description": (
+                    "댈러스 연준 Trimmed Mean PCE · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
+                    "12개월판과 같은 차트에서 비교하지 말 것"
+                ),
+            },
+            {
+                "key": "US_MEDIAN_CPI_12M", "label": "중위 CPI (12개월)", "fred_id": "MEDCPIM159SFRBCLE",
+                "description": "클리블랜드 연준 Median CPI · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
+            },
+            {
+                "key": "US_MEDIAN_CPI_1M", "label": "중위 CPI (1개월연율)", "fred_id": "MEDCPIM158SFRBCLE",
+                "description": (
+                    "클리블랜드 연준 Median CPI · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
+                    "12개월판과 같은 차트에서 비교하지 말 것"
+                ),
+            },
+            {
+                "key": "US_TRIMMED_MEAN_CPI_12M", "label": "절사평균 CPI (12개월)",
+                "fred_id": "TRMMEANCPIM159SFRBCLE",
+                "description": "클리블랜드 연준 16% Trimmed-Mean CPI · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
+            },
+            {
+                "key": "US_TRIMMED_MEAN_CPI_1M", "label": "절사평균 CPI (1개월연율)",
+                "fred_id": "TRMMEANCPIM158SFRBCLE",
+                "description": (
+                    "클리블랜드 연준 16% Trimmed-Mean CPI · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
+                    "12개월판과 같은 차트에서 비교하지 말 것"
+                ),
+            },
+        ],
         "고용": [
             {"key": "US_UNRATE", "label": "실업률", "fred_id": "UNRATE"},
             {"key": "US_PAYEMS", "label": "비농업고용", "fred_id": "PAYEMS"},

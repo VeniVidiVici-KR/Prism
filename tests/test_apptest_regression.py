@@ -326,6 +326,72 @@ def test_macro_indicator_credit_spread_comparison_full_flow():
 
 
 @pytest.mark.network
+def test_macro_indicator_underlying_inflation_indicator_buttons():
+    """기저 인플레(절사평균/중위) 라운드 — 카탈로그에 추가한 6개 버튼(12개월/1개월연율 x
+    Trimmed Mean PCE·Median CPI·Trimmed-Mean CPI)이 예외 없이 렌더링되고, 이미 FRED가
+    변화율(%)로 제공하는 계열이라 뷰가 yoy_percent()·pct_change() 등으로 이중 계산하지
+    않는지(단일 지표 보기는 원 시리즈를 그대로 그린다) 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    btn = next(b for b in at.button if b.label == "절사평균 CPI (1개월연율)")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    assert any("절사평균 CPI (1개월연율)" in m.value for m in at.markdown)
+    assert any(
+        "16% Trimmed-Mean CPI" in c.value and "계절조정" in c.value and "비교하지" in c.value
+        for c in at.caption
+    )
+
+
+@pytest.mark.network
+def test_macro_indicator_underlying_inflation_comparison_full_flow():
+    """기저 인플레 비교 뷰 — 헤드라인/근원 CPI·PCE(지수에서 yoy_percent로 계산)와 절사평균/
+    중위(FRED가 이미 12개월 변화율로 제공, 그대로 사용) 6개를 한 표·차트에 겹친다.
+    ⚠️ 핵심 회귀: 최근 값들이 전부 상식적 범위(2~5%대)에 들어와야 한다 — 계열을 잘못
+    집었거나(예: 1개월 연율판을 실수로 넣음) 이중 계산했다면 이 범위를 벗어난다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    btn = next(b for b in at.button if b.label == "기저 인플레 비교 보기")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    df = next(df for df in at.dataframe if "최신값(%)" in df.value.reset_index().columns).value
+    expected_rows = {
+        "헤드라인 CPI (YoY)", "근원 CPI (YoY)", "근원 PCE (YoY)",
+        "절사평균 PCE (12개월)", "중위 CPI (12개월)", "절사평균 CPI (12개월)",
+    }
+    assert expected_rows <= set(df.index)
+    for label in expected_rows:
+        value = df.loc[label, "최신값(%)"]
+        assert 1.0 < value < 6.0, f"{label}={value}가 상식적 범위(1~6%)를 벗어났습니다."
+
+    assert any("1개월" in c.value and "제외" in c.value for c in at.caption)  # 시계 통일 캡션
+    assert any("정규화하지 않았습니다" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_macro_indicator_underlying_inflation_in_overlay_options():
+    """오버레이(지표 겹쳐보기) 자동 포함 확인 — 새 카탈로그 항목은 별도 등록 없이
+    INDICATORS["US"]를 순회하는 기존 로직만으로 겹쳐보기 후보에 자동으로 들어와야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    assert at.exception == []
+
+    overlay_ms = next(m for m in at.multiselect if m.label.startswith("겹쳐볼 지표"))
+    expected_labels = {
+        "절사평균 PCE (12개월)", "절사평균 PCE (1개월연율)",
+        "중위 CPI (12개월)", "중위 CPI (1개월연율)",
+        "절사평균 CPI (12개월)", "절사평균 CPI (1개월연율)",
+    }
+    assert expected_labels <= set(overlay_ms.options)
+
+
+@pytest.mark.network
 def test_macro_indicator_bond_issuance_full_flow():
     """신용시장 라운드 PART B — 여러 기업의 424B(발행설명서) 공시를 통합 조회한다.
     (1) 자동 로드 없이 버튼 클릭 시에만 조회되는지, (2) 재실행 시 캐시로 재조회 없이

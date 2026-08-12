@@ -111,6 +111,21 @@ CREDIT_SPREAD_COMPARISON_KEYS = {
 # 현금흐름으로 조달 중일 가능성).
 BOND_ISSUANCE_UNIVERSE = ["GOOGL", "MSFT", "AMZN", "META", "ORCL", "NVDA", "AAPL", "EQIX", "DLR"]
 
+# "기저 인플레 비교" 뷰 전용 — 헤드라인/근원은 지수 카탈로그라 yoy_percent()로 12개월 변화율을
+# 계산해야 하고("index_yoy"), 절사평균/중위 계열은 FRED가 이미 12개월 변화율(%)로 주므로 그대로
+# 쓴다("rate", 이중계산 방지). ⚠️ 전부 12개월 시계·계절조정(SA)으로 통일했다 — 1개월 연율판
+# (예: US_TRIMMED_MEAN_PCE_1M)은 시계가 달라 여기 포함하지 않는다(valley/macro.py의 "기저
+# 인플레" 카테고리 주석 참고). 헤드라인/근원 CPI·PCE 모두 이미 계절조정(SA) 지수라 절사평균/
+# 중위(둘 다 SA)와 조정 방식이 일치한다.
+UNDERLYING_INFLATION_COMPARISON_KEYS = [
+    ("헤드라인 CPI (YoY)", "index_yoy", "US_CPI"),
+    ("근원 CPI (YoY)", "index_yoy", "US_CORE_CPI"),
+    ("근원 PCE (YoY)", "index_yoy", "US_CORE_PCE"),
+    ("절사평균 PCE (12개월)", "rate", "US_TRIMMED_MEAN_PCE_12M"),
+    ("중위 CPI (12개월)", "rate", "US_MEDIAN_CPI_12M"),
+    ("절사평균 CPI (12개월)", "rate", "US_TRIMMED_MEAN_CPI_12M"),
+]
+
 load_dotenv(override=True)
 
 st.title("🌐 Macro Indicator")
@@ -132,6 +147,7 @@ if st.session_state.get("macro_country") != country_code:
     st.session_state.macro_credit_spread_loaded = False
     st.session_state.macro_bond_issuance_loaded = False
     st.session_state.macro_kofia_loaded = False
+    st.session_state.macro_underlying_inflation_loaded = False
 
 if country_code == "KR" and not os.environ.get("ECOS_API_KEY"):
     st.info(
@@ -601,6 +617,54 @@ if country_code == "US":
                 column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
             )
             st.caption(f"기업당 최근 5건까지, 총 {len(issuance_rows)}건 · 최신순 통합 정렬(기업 구분 없음).")
+
+    st.divider()
+    st.subheader("기저 인플레 비교 — 헤드라인·근원·절사평균/중위")
+    st.caption(
+        "근원(core)은 식품·에너지를 범주째 제외하지만, 절사평균(trimmed mean)·중위(median)는 "
+        "매달 극단적으로 오르내린 품목을 통계적으로 걸러내 '특정 품목 때문인지 전반적인지'를 "
+        "다른 각도에서 봅니다. ⚠️ 전부 12개월 변화율·계절조정(SA)으로 통일했습니다 — 1개월 "
+        "연율판은 시계가 달라 이 비교에서 제외했습니다(위 '기저 인플레' 카테고리에서 개별로 "
+        "볼 수 있습니다)."
+    )
+
+    if st.button("기저 인플레 비교 보기", key="btn_underlying_inflation_compare"):
+        st.session_state.macro_underlying_inflation_loaded = True
+
+    if st.session_state.get("macro_underlying_inflation_loaded"):
+        underlying_series = {}
+        underlying_failed = []
+        for label, kind, key in UNDERLYING_INFLATION_COMPARISON_KEYS:
+            try:
+                raw = _load_series(key)
+                underlying_series[label] = yoy_percent(raw) if kind == "index_yoy" else raw
+            except MacroDataError as e:
+                underlying_failed.append(f"{label}: {e}")
+
+        if underlying_failed:
+            st.warning("일부 항목을 제외했습니다: " + " / ".join(underlying_failed))
+
+        if not underlying_series:
+            st.info("표시할 수 있는 항목이 없습니다.")
+        else:
+            underlying_rows = [
+                {"구분": label, "최신값(%)": s.iloc[-1], "기준월": s.index[-1].strftime("%Y-%m")}
+                for label, s in underlying_series.items()
+                if not s.empty
+            ]
+            st.dataframe(
+                pd.DataFrame(underlying_rows).set_index("구분").style.format({"최신값(%)": "{:.2f}%"}),
+                width="stretch",
+            )
+            aligned = pd.concat(underlying_series, axis=1, join="inner")
+            if aligned.empty:
+                st.warning("선택한 항목들 사이에 겹치는 기간이 없습니다.")
+            else:
+                st.line_chart(aligned)
+                st.caption(
+                    f"겹치는 구간({aligned.index[0]:%Y-%m} ~ {aligned.index[-1]:%Y-%m}) · "
+                    "모두 12개월 변화율(%)·계절조정(SA) 동일 기준이라 정규화하지 않았습니다."
+                )
 
 st.divider()
 st.header("CPI 구성항목 한눈에 보기")
