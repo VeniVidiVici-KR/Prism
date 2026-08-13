@@ -14,7 +14,14 @@ import pandas as pd
 import pytest
 
 import valley.toss as toss_mod
-from valley.toss import TossDataError, get_institution_breakdown_history, get_investor_trading_history
+from valley.toss import (
+    TossDataError,
+    get_credit_trades_history,
+    get_institution_breakdown_history,
+    get_investor_trading_history,
+    get_securities_lending_history,
+    get_short_selling_history,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -194,7 +201,10 @@ def test_get_institution_breakdown_history_labels_and_null_breakdown(monkeypatch
 
 
 def test_pagination_follows_next_until_cursor(monkeypatch):
-    """days가 한 페이지(최대 100, 실측 확인)를 넘으면 nextUntil 커서로 이어서 조회해야 한다."""
+    """days가 한 페이지(최대 100, 실측 확인)를 넘으면 nextUntil 커서로 이어서 조회해야 한다.
+    ⚠️ 리스크지표 라운드에서 _fetch_investor_trading_records를 범용 _fetch_paginated_records로
+    일반화했다(investor-trading/short-selling/credit-trades/securities-lending 4개 엔드포인트가
+    전부 동일한 페이지네이션 구조를 공유함을 실측 확인했기 때문)."""
     monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
     monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
     page1 = {
@@ -211,8 +221,187 @@ def test_pagination_follows_next_until_cursor(monkeypatch):
     }
     with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)), \
          patch("valley.toss.requests.get", side_effect=[_mock_response(200, page1), _mock_response(200, page2)]) as mock_get:
-        records = toss_mod._fetch_investor_trading_records("005930", days=3)
+        records = toss_mod._fetch_paginated_records("/stocks/005930/investor-trading", days=3)
     assert len(records) == 3
     assert mock_get.call_count == 2
     second_call_params = mock_get.call_args_list[1].kwargs["params"]
     assert second_call_params["until"] == "2026-08-11"
+
+
+# ── 종목 리스크 지표(공매도·신용·대차) — 2026-08 라운드에서 추가. 고정 데이터는 실측
+# (005930)으로 확인한 실제 응답 구조를 그대로 재현한다. ──────────────────────────────
+
+_SHORT_SELLING_PAGE = {
+    "result": {
+        "nextUntil": "2026-07-29",
+        "records": [
+            {
+                "date": "2026-08-12",
+                "shortSellingVolume": "1984289",
+                "shortSellingAmount": "502596237000",
+                "shortSellingVolumeRate": "0.07321",
+                "shortSellingAmountRate": "0.0732",
+            },
+            {
+                # 실측 확인된 케이스 — 비중 필드가 간헐적으로 null(거래량/거래대금은 항상 존재).
+                "date": "2026-07-30",
+                "shortSellingVolume": "2546783",
+                "shortSellingAmount": "536397250750",
+                "shortSellingVolumeRate": None,
+                "shortSellingAmountRate": None,
+            },
+        ],
+    }
+}
+
+_CREDIT_TRADES_PAGE = {
+    "result": {
+        "nextUntil": "2026-07-29",
+        "records": [
+            {
+                "date": "2026-08-12",
+                "marginLoan": {
+                    "newQuantity": "2309763",
+                    "returnQuantity": "1314116",
+                    "balanceQuantity": "24280842",
+                    "balanceRate": "0.004",
+                    "tradingRate": "0.1414",
+                },
+                "stockLoan": {
+                    "newQuantity": "1481",
+                    "returnQuantity": "1880",
+                    "balanceQuantity": "7359",
+                    "balanceRate": "0",
+                    "tradingRate": "0",
+                },
+            },
+            {
+                "date": "2026-08-11",
+                "marginLoan": {
+                    "newQuantity": "1608980",
+                    "returnQuantity": "2115700",
+                    "balanceQuantity": "23308543",
+                    "balanceRate": "0.0039",
+                    "tradingRate": "0.0782",
+                },
+                "stockLoan": {
+                    "newQuantity": "4705",
+                    "returnQuantity": "4833",
+                    "balanceQuantity": "7758",
+                    "balanceRate": "0",
+                    "tradingRate": "0.0001",
+                },
+            },
+        ],
+    }
+}
+
+_SECURITIES_LENDING_PAGE = {
+    "result": {
+        "nextUntil": "2026-07-29",
+        "records": [
+            {
+                "date": "2026-08-12",
+                "executionQuantity": "799209",
+                "repaymentQuantity": "972343",
+                "balanceQuantity": "89405665",
+                "balanceAmount": "22843147407500",
+            },
+            {
+                "date": "2026-08-11",
+                "executionQuantity": "378424",
+                "repaymentQuantity": "471320",
+                "balanceQuantity": "89578799",
+                "balanceAmount": "21454122360500",
+            },
+        ],
+    }
+}
+
+
+def _patched_toss(response_json):
+    return (
+        patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)),
+        patch("valley.toss.requests.get", return_value=_mock_response(200, response_json)),
+    )
+
+
+def test_get_short_selling_history_parses_volume_amount_and_rate(monkeypatch):
+    """⚠️ 핵심 회귀 — 거래량(주)/거래대금(원)/비중(0~1 소수, 실측 대조로 '당일 전체
+    거래량·거래대금 대비 비중'임을 확인) 필드가 그대로 와야 하고, 비중이 null인 날(실측
+    확인된 케이스)은 NaN으로 남아야 한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    p1, p2 = _patched_toss(_SHORT_SELLING_PAGE)
+    with p1, p2:
+        df = get_short_selling_history("005930", days=2)
+
+    assert list(df.columns) == ["거래량", "거래대금", "거래량비중", "거래대금비중"]
+    latest = df.iloc[-1]  # 2026-08-12
+    assert latest["거래량"] == 1984289.0
+    assert latest["거래대금"] == 502596237000.0
+    assert latest["거래량비중"] == pytest.approx(0.07321)
+
+    null_day = df.iloc[0]  # 2026-07-30, 비중 null
+    assert null_day["거래량"] == 2546783.0  # 거래량 자체는 존재
+    assert pd.isna(null_day["거래량비중"])
+    assert pd.isna(null_day["거래대금비중"])
+
+
+def test_get_credit_trades_history_separates_margin_and_stock_loan(monkeypatch):
+    """⚠️ 핵심 회귀 — 융자(marginLoan)와 대주(stockLoan)는 반대 성격의 상품인데 같은
+    엔드포인트에 오므로, 절대 하나로 합치지 않고 별도 컬럼으로 유지해야 한다. balanceRate는
+    실측 대조로 확인한 공여율(잔고/상장주식수) 그대로 통과시킨다(재계산하지 않음)."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    p1, p2 = _patched_toss(_CREDIT_TRADES_PAGE)
+    with p1, p2:
+        df = get_credit_trades_history("005930", days=2)
+
+    assert list(df.columns) == ["융자잔고", "융자공여율", "대주잔고", "대주공여율"]
+    latest = df.iloc[-1]  # 2026-08-12
+    assert latest["융자잔고"] == 24280842.0
+    assert latest["융자공여율"] == pytest.approx(0.004)
+    assert latest["대주잔고"] == 7359.0
+    assert latest["대주공여율"] == 0.0
+    # tradingRate는 정확한 산식을 실측으로 확정 못해 이 함수가 노출하지 않는다(추측 방지).
+    assert "융자tradingRate" not in df.columns
+    assert "tradingRate" not in df.columns
+
+
+def test_get_securities_lending_history_parses_execution_repayment_balance(monkeypatch):
+    """⚠️ 핵심 회귀 — 체결/상환/잔고수량(주) + 잔고금액(원, 실측 대조로 잔고수량×종가와
+    정확히 일치함을 확인한 값). 단위 혼동 없이 그대로 통과해야 한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    p1, p2 = _patched_toss(_SECURITIES_LENDING_PAGE)
+    with p1, p2:
+        df = get_securities_lending_history("005930", days=2)
+
+    assert list(df.columns) == ["체결수량", "상환수량", "잔고수량", "잔고금액"]
+    latest = df.iloc[-1]  # 2026-08-12
+    assert latest["체결수량"] == 799209.0
+    assert latest["상환수량"] == 972343.0
+    assert latest["잔고수량"] == 89405665.0
+    assert latest["잔고금액"] == 22843147407500.0
+
+
+def test_risk_indicator_functions_reuse_shared_request_and_pagination(monkeypatch):
+    """⚠️ 요구사항 — 세 함수 다 토큰 캐싱/401·429 재시도 로직을 새로 만들지 않고 기존
+    _request()/_fetch_paginated_records()를 그대로 재사용해야 한다. 토큰 발급이 함수마다
+    따로 일어나면 안 된다(같은 프로세스 내 재사용 확인)."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)) as mock_post, \
+         patch(
+             "valley.toss.requests.get",
+             side_effect=[
+                 _mock_response(200, _SHORT_SELLING_PAGE),
+                 _mock_response(200, _CREDIT_TRADES_PAGE),
+                 _mock_response(200, _SECURITIES_LENDING_PAGE),
+             ],
+         ):
+        get_short_selling_history("005930", days=2)
+        get_credit_trades_history("005930", days=2)
+        get_securities_lending_history("005930", days=2)
+    assert mock_post.call_count == 1  # 3개 지표를 조회해도 토큰 발급은 1회뿐

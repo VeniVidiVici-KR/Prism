@@ -38,8 +38,11 @@ from valley.peers import get_peer_tickers as _get_peer_tickers
 from valley.peers import get_roe_history as _get_roe_history
 from valley.peers import get_valuation_snapshot as _get_valuation_snapshot
 from valley.supply import get_investor_net_trading as _get_investor_net_trading
+from valley.toss import get_credit_trades_history as _get_credit_trades_history
 from valley.toss import get_institution_breakdown_history as _get_institution_breakdown_history
 from valley.toss import get_investor_trading_history as _get_investor_trading_history
+from valley.toss import get_securities_lending_history as _get_securities_lending_history
+from valley.toss import get_short_selling_history as _get_short_selling_history
 
 
 @st.cache_data(ttl=None, show_spinner=False)
@@ -162,6 +165,23 @@ def get_investor_trading_history(symbol: str, days: int = 20):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institution_breakdown_history(symbol: str, days: int = 20):
     return _get_institution_breakdown_history(symbol, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_short_selling_history(symbol: str, days: int = 20):
+    """공매도는 T+1 지연이 있어(실측 확인) 당일 내 갱신 빈도가 수급보다 낮지만, 다른 토스
+    캐시들과 ttl을 통일해 혼란을 줄인다."""
+    return _get_short_selling_history(symbol, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_credit_trades_history(symbol: str, days: int = 20):
+    return _get_credit_trades_history(symbol, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_securities_lending_history(symbol: str, days: int = 20):
+    return _get_securities_lending_history(symbol, days)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

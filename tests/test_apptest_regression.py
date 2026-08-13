@@ -541,6 +541,141 @@ def test_stock_research_supply_source_toss_caching_no_duplicate_network_calls():
 
 
 @pytest.mark.network
+def test_stock_research_risk_indicators_hidden_for_us_ticker():
+    """종목 리스크 지표 라운드 — 미국 종목은 섹션 헤더는 보이되(정보 안내), 로드 버튼은
+    아예 없어야 한다(국내 종목 전용 API)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("AAPL")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    assert any("리스크 지표" in h.value for h in at.subheader)
+    assert any("국내 상장기업 전용" in i.value for i in at.info)
+    assert next((b for b in at.button if b.label == "리스크 지표 불러오기"), None) is None
+
+
+@pytest.mark.network
+def test_stock_research_risk_indicators_missing_key_shows_guidance_no_crash(monkeypatch):
+    """토스 키가 없으면 앱이 죽지 않고 명확한 안내가 떠야 하며, 로드 버튼도 없어야 한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "")
+    with patch("dotenv.load_dotenv", return_value=True):
+        at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at.run()
+        at.text_input[0].input("005930")
+        next(b for b in at.button if b.label == "조회하기").click()
+        at.run(timeout=90)
+    assert at.exception == []
+    assert any("TOSS_CLIENT_ID" in i.value for i in at.info)
+    assert next((b for b in at.button if b.label == "리스크 지표 불러오기"), None) is None
+
+
+@pytest.mark.network
+def test_stock_research_risk_indicators_full_flow_005930():
+    """삼성전자로 세 지표(공매도/신용거래/대차거래)를 실제 조회해 (1) 표 컬럼이 기대대로
+    나오는지, (2) 값이 상식적 범위인지(공매도 비중은 통상 한 자릿수~10%대, 신용융자
+    공여율은 대형주라 매우 낮음), (3) 세 캡션(T+1 지연·종목별 잔고임을 구분·대차의
+    헤지/차익거래 한계 고지)이 전부 뜨는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("005930")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run(timeout=90)
+
+    next(b for b in at.button if b.label == "리스크 지표 불러오기").click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    short_selling_df = next(df for df in at.dataframe if "거래량비중" in df.value.reset_index().columns).value
+    assert not short_selling_df.empty
+    # 비중은 0~1 소수(퍼센트 아님) — 실측 기준 상식적 범위(0~30%, 스파이크 감안 여유있게)
+    valid_rates = short_selling_df["거래량비중"].dropna()
+    assert len(valid_rates) > 0
+    assert (valid_rates >= 0).all() and (valid_rates < 0.3).all()
+
+    credit_df = next(df for df in at.dataframe if "융자잔고" in df.value.reset_index().columns).value
+    assert not credit_df.empty
+    assert (credit_df["융자공여율"].dropna() < 0.05).all()  # 대형주 신용공여율은 낮은 편
+
+    lending_df = next(df for df in at.dataframe if "잔고수량" in df.value.reset_index().columns).value
+    assert not lending_df.empty
+    assert (lending_df["잔고수량"].dropna() > 0).all()
+
+    assert any("T+1" in c.value for c in at.caption)
+    assert any("종목만의 잔고" in c.value for c in at.caption)
+    assert any("헤지·차익거래" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_stock_research_risk_indicators_partial_failure_isolation():
+    """개별 지표 실패 격리 — 공매도 조회가 실패해도 신용거래·대차거래는 정상 표시돼야 한다.
+    ⚠️ 다른 테스트가 이미 "005930"/"000270"의 캐시를 데워놨을 수 있어(st.cache_data는
+    프로세스 전역이라 mock을 patch해도 캐시 히트면 아예 호출되지 않는다), 이 테스트 전용
+    종목코드(005380)로 콜드 스타트를 보장한다."""
+    import valley.toss as toss_mod
+
+    def failing_short_selling(*args, **kwargs):
+        raise toss_mod.TossDataError("모의 실패 — 공매도 조회 불가")
+
+    with patch("views._cache._get_short_selling_history", side_effect=failing_short_selling):
+        at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at.run()
+        at.text_input[0].input("005380")
+        next(b for b in at.button if b.label == "조회하기").click()
+        at.run(timeout=90)
+
+        next(b for b in at.button if b.label == "리스크 지표 불러오기").click()
+        at.run(timeout=90)
+    assert at.exception == []
+    assert any("공매도 데이터 조회에 실패했습니다" in w.value for w in at.warning)
+    # 나머지 두 지표는 정상 렌더링
+    assert any("융자잔고" in df.value.reset_index().columns for df in at.dataframe)
+    assert any("잔고수량" in df.value.reset_index().columns for df in at.dataframe)
+
+
+@pytest.mark.network
+def test_stock_research_risk_indicators_button_gated_and_cached():
+    """캐싱/호출 횟수 회귀 — (1) 페이지 진입(+조회하기 클릭)만으로는 토스 리스크 엔드포인트
+    호출이 0회, (2) 리스크 지표 버튼 클릭 시 지표당 1회씩 총 3회, (3) 재실행 시 캐시 히트로
+    추가 호출 0회여야 한다. ⚠️ valley.toss.requests.get을 patch하면 requests 모듈 자체가
+    공유 객체라 DART/yfinance 등 무관한 호출까지 다 잡힌다(실측으로 확인) — 그래서 전체
+    호출이 아니라 토스 리스크 엔드포인트 경로만 필터링해서 센다. 다른 테스트와 캐시가
+    섞이지 않도록 이 테스트 전용 종목코드(000270)를 쓴다."""
+    import valley.toss as toss_mod
+
+    get_calls = []
+    _orig_get = toss_mod.requests.get
+
+    def counting_get(*args, **kwargs):
+        url = args[0] if args else kwargs.get("url", "")
+        get_calls.append(url)
+        return _orig_get(*args, **kwargs)
+
+    def risk_calls():
+        return [c for c in get_calls if any(p in c for p in ("short-selling", "credit-trades", "securities-lending"))]
+
+    with patch("valley.toss.requests.get", side_effect=counting_get):
+        at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at.run()
+        at.text_input[0].input("000270")
+        next(b for b in at.button if b.label == "조회하기").click()
+        at.run(timeout=90)
+        assert len(risk_calls()) == 0  # 자동 로드 금지(리스크 지표 버튼을 아직 안 눌렀음)
+
+        next(b for b in at.button if b.label == "리스크 지표 불러오기").click()
+        at.run(timeout=90)
+        assert at.exception == []
+        assert len(risk_calls()) == 3  # 지표당 정확히 1회
+        assert len({p.split("/stocks/")[-1].split("/")[-1] for p in risk_calls()}) == 3  # 세 엔드포인트 전부
+
+        calls_after_click = len(risk_calls())
+        at.run(timeout=90)  # 재실행 — 캐시 히트, 추가 호출 없어야 함
+        assert len(risk_calls()) == calls_after_click
+
+
+@pytest.mark.network
 def test_macro_indicator_kofia_credit_balance_full_flow():
     """KOFIA 신용공여 라운드 — 일별·코스피/코스닥 구분 신용공여 데이터가 예외 없이 렌더링되고,
     (1) 자동 로드 없이 버튼 클릭 시에만 조회되는지, (2) 재실행 시 캐시로 재조회 없이 유지되는지

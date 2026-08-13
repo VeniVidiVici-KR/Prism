@@ -156,9 +156,12 @@ def _request(path: str, params: dict | None = None, *, _retried_auth: bool = Fal
     return resp.json()
 
 
-def _fetch_investor_trading_records(symbol: str, days: int) -> list[dict]:
+def _fetch_paginated_records(path: str, days: int) -> list[dict]:
     """count(최대 100, 실측 확인)를 넘는 기간이 필요하면 result.nextUntil 커서로 이어서
-    페이지네이션한다."""
+    페이지네이션한다. investor-trading/short-selling/credit-trades/securities-lending 네
+    엔드포인트 전부 동일한 {result: {nextUntil, records}} + until/count 파라미터 구조를
+    공유함을 실측으로 확인했다(2026-08 리스크지표 라운드) — path만 다르므로 하나의 헬퍼로
+    재사용한다(중복 구현 금지)."""
     records: list[dict] = []
     until: str | None = None
     while len(records) < days:
@@ -166,7 +169,7 @@ def _fetch_investor_trading_records(symbol: str, days: int) -> list[dict]:
         params: dict = {"count": page_count}
         if until:
             params["until"] = until
-        data = _request(f"/stocks/{symbol}/investor-trading", params)
+        data = _request(path, params)
         result = data.get("result", {})
         page_records = result.get("records", [])
         if not page_records:
@@ -178,6 +181,10 @@ def _fetch_investor_trading_records(symbol: str, days: int) -> list[dict]:
     return records
 
 
+def _to_float_or_nan(value) -> float:
+    return float(value) if value is not None else float("nan")
+
+
 def get_investor_trading_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) -> pd.DataFrame:
     """국내 종목의 최근 `days` 영업일 개인/외국인/기관 순매수(거래량, 주식 수)를 반환한다.
 
@@ -186,7 +193,7 @@ def get_investor_trading_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) 
     투자자 수치가 아직 집계되지 않아 null로 오는 경우가 있다(실측 확인) — 그 항목은 NaN으로
     남긴다.
     """
-    records = _fetch_investor_trading_records(symbol, days)
+    records = _fetch_paginated_records(f"/stocks/{symbol}/investor-trading", days)
     if not records:
         raise TossDataError(f"'{symbol}' 종목의 투자자별 수급 데이터가 없습니다.")
 
@@ -206,6 +213,96 @@ def get_investor_trading_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) 
     return df
 
 
+def get_short_selling_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) -> pd.DataFrame:
+    """국내 종목의 최근 `days` 영업일 공매도 거래량/거래대금/비중을 반환한다.
+
+    ⚠️ 비중 필드(shortSellingVolumeRate/AmountRate)는 실측 대조로 "당일 전체 거래량(또는
+    거래대금) 대비 공매도 비중"임을 확인했다 — 예: 2026-08-12 shortSellingVolume 1,984,289 /
+    shortSellingVolumeRate 0.07321로 역산한 전체 거래량(27,106,529)이 같은 날 pykrx 실측
+    거래량(27,102,479)과 거의 정확히 일치. 비중은 0~1 소수로 온다(퍼센트 표시는 호출부가
+    ×100). ⚠️ investor-trading과 달리 공매도는 **T+1 지연**이 있다(조회 당일 데이터는 아직
+    없고 전일까지만 온다 — 실측 확인). 비중 필드는 간헐적으로 null이 온다(거래량/거래대금은
+    항상 존재) — NaN으로 남긴다(추측으로 채우지 않음).
+    """
+    records = _fetch_paginated_records(f"/stocks/{symbol}/short-selling", days)
+    if not records:
+        raise TossDataError(f"'{symbol}' 종목의 공매도 데이터가 없습니다.")
+
+    rows = [
+        {
+            "날짜": rec["date"],
+            "거래량": _to_float_or_nan(rec.get("shortSellingVolume")),
+            "거래대금": _to_float_or_nan(rec.get("shortSellingAmount")),
+            "거래량비중": _to_float_or_nan(rec.get("shortSellingVolumeRate")),
+            "거래대금비중": _to_float_or_nan(rec.get("shortSellingAmountRate")),
+        }
+        for rec in records[:days]
+    ]
+    df = pd.DataFrame(rows)
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    return df.set_index("날짜").sort_index()
+
+
+def get_credit_trades_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) -> pd.DataFrame:
+    """국내 종목의 최근 `days` 영업일 신용거래(융자/대주) 잔고·공여율을 반환한다.
+
+    ⚠️ 융자(margin loan, 빌린 돈으로 매수)와 대주(개인 신용대주, 빌린 주식을 매도)는 반대
+    성격의 상품인데 같은 엔드포인트에 함께 온다 — 혼동하지 말 것. valley.kofia로 이미 붙인
+    시장 전체 신용공여 잔고와 달리 이건 **종목별** 잔고다. balanceRate(공여율)은 실측 대조
+    (005930 10영업일)로 "잔고수량 / 상장주식수"에 근접함을 확인했다(오차 0.01%p 이내 —
+    상장주식수를 investor-trading의 외국인 한도수량으로 근사해서 생기는 반올림 오차로
+    추정). tradingRate(당일 거래 대비 비율로 추정되는 필드)는 정확한 분모를 실측으로
+    확정하지 못해 이 함수가 반환하지 않는다(추측한 산식을 그대로 노출하지 않음).
+    """
+    records = _fetch_paginated_records(f"/stocks/{symbol}/credit-trades", days)
+    if not records:
+        raise TossDataError(f"'{symbol}' 종목의 신용거래 데이터가 없습니다.")
+
+    rows = []
+    for rec in records[:days]:
+        margin = rec.get("marginLoan") or {}
+        stock_loan = rec.get("stockLoan") or {}
+        rows.append(
+            {
+                "날짜": rec["date"],
+                "융자잔고": _to_float_or_nan(margin.get("balanceQuantity")),
+                "융자공여율": _to_float_or_nan(margin.get("balanceRate")),
+                "대주잔고": _to_float_or_nan(stock_loan.get("balanceQuantity")),
+                "대주공여율": _to_float_or_nan(stock_loan.get("balanceRate")),
+            }
+        )
+    df = pd.DataFrame(rows)
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    return df.set_index("날짜").sort_index()
+
+
+def get_securities_lending_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) -> pd.DataFrame:
+    """국내 종목의 최근 `days` 영업일 대차거래(체결/상환/잔고)를 반환한다.
+
+    ⚠️ 대차거래는 공매도의 "선행" 성격이 있다(빌려야 팔 수 있음)지만, 대차 전부가 공매도로
+    이어지는 건 아니다(헤지·차익거래 목적도 포함) — 이 한계는 UI 캡션에서 명시한다.
+    balanceAmount(잔고금액)는 실측 대조 결과 balanceQuantity × 당일 종가와 정확히 일치했다
+    (별도 집계가 아니라 잔고수량의 단순 가치평가 필드).
+    """
+    records = _fetch_paginated_records(f"/stocks/{symbol}/securities-lending", days)
+    if not records:
+        raise TossDataError(f"'{symbol}' 종목의 대차거래 데이터가 없습니다.")
+
+    rows = [
+        {
+            "날짜": rec["date"],
+            "체결수량": _to_float_or_nan(rec.get("executionQuantity")),
+            "상환수량": _to_float_or_nan(rec.get("repaymentQuantity")),
+            "잔고수량": _to_float_or_nan(rec.get("balanceQuantity")),
+            "잔고금액": _to_float_or_nan(rec.get("balanceAmount")),
+        }
+        for rec in records[:days]
+    ]
+    df = pd.DataFrame(rows)
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    return df.set_index("날짜").sort_index()
+
+
 def get_institution_breakdown_history(symbol: str, days: int = DEFAULT_TRADING_DAYS) -> pd.DataFrame:
     """국내 종목의 최근 `days` 영업일 기관 세부분류(금융투자/보험/투신/사모펀드/은행/
     기타금융기관/연기금) 순매수(거래량, 주식 수)를 반환한다.
@@ -213,7 +310,7 @@ def get_institution_breakdown_history(symbol: str, days: int = DEFAULT_TRADING_D
     ⚠️ 조회 당일(장중) 또는 기관 거래가 없는 날은 breakdown 자체가 null로 올 수 있다 —
     그런 날은 전 항목 NaN으로 남긴다(억지로 0으로 채우지 않음, 결측과 무거래를 구분).
     """
-    records = _fetch_investor_trading_records(symbol, days)
+    records = _fetch_paginated_records(f"/stocks/{symbol}/investor-trading", days)
     if not records:
         raise TossDataError(f"'{symbol}' 종목의 투자자별 수급 데이터가 없습니다.")
 
