@@ -38,6 +38,8 @@ from valley.peers import get_peer_tickers as _get_peer_tickers
 from valley.peers import get_roe_history as _get_roe_history
 from valley.peers import get_valuation_snapshot as _get_valuation_snapshot
 from valley.supply import get_investor_net_trading as _get_investor_net_trading
+from valley.toss import get_institution_breakdown_history as _get_institution_breakdown_history
+from valley.toss import get_investor_trading_history as _get_investor_trading_history
 
 
 @st.cache_data(ttl=None, show_spinner=False)
@@ -148,6 +150,18 @@ def get_dart_disclosure_list(corp_code: str, months: int = 6, page_count: int = 
 def get_investor_net_trading(stock_code: str, days: int = 20):
     """당일 수급은 장중에도 갱신될 수 있어 다른 yfinance 조회들과 같은 ttl(1시간)로 맞춘다."""
     return _get_investor_net_trading(stock_code, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_investor_trading_history(symbol: str, days: int = 20):
+    """토스증권 수급(거래량 기준) — 기존 KRX 경로(get_investor_net_trading)와 같은 ttl(1시간)로
+    맞춰 두 소스를 나란히 볼 때 갱신 주기 차이로 혼란이 없게 한다."""
+    return _get_investor_trading_history(symbol, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_institution_breakdown_history(symbol: str, days: int = 20):
+    return _get_institution_breakdown_history(symbol, days)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

@@ -79,7 +79,7 @@ def test_pages_do_not_crash_when_env_keys_missing(monkeypatch):
     다시 부르므로, dotenv 자체를 no-op으로 막아 실제 .env 파일이 있어도 무시되게 한다."""
     for var in (
         "ECOS_API_KEY", "DART_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "BLS_API_KEY",
-        "KRX_ID", "KRX_PW", "KOFIA_API_KEY",
+        "KRX_ID", "KRX_PW", "KOFIA_API_KEY", "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET",
     ):
         monkeypatch.delenv(var, raising=False)
     with patch("dotenv.load_dotenv", return_value=True), \
@@ -455,6 +455,89 @@ def test_stock_research_edgar_securities_issuance_category_googl():
         forms = set(filtered.value["유형"])
         assert forms, "증권 발행 필터 결과가 비어있음"
         assert all(f.startswith("424B") or f == "FWP" for f in forms)
+
+
+@pytest.mark.network
+def test_stock_research_supply_source_default_is_krx_regression():
+    """토스증권 파일럿 라운드 — 소스 선택 라디오를 추가해도 기본값은 여전히 KRX(거래대금)
+    라야 하고, 건드리지 않으면 기존 화면(단위 억원, 외국인/기관/개인 3개 지표)이 그대로
+    나와야 한다(순수 추가, 회귀 없음)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("005930")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    source_radio = next((r for r in at.radio if r.label == "데이터 소스"), None)
+    assert source_radio is not None, "TOSS 키가 있는데 소스 선택 라디오가 없음"
+    assert source_radio.value == "KRX (거래대금)"  # 기본값 회귀
+
+    metric_labels = [m.label for m in at.metric]
+    assert {"외국인", "기관", "개인"} <= set(metric_labels)
+    assert any("억원" in c.value for c in at.caption)  # 기존 KRX 단위 표기 유지
+
+
+@pytest.mark.network
+def test_stock_research_supply_source_toss_pilot_full_flow():
+    """토스 소스로 전환하면 (1) 단위가 주(거래량)로 바뀌고 KRX와 직접 비교 불가 경고가
+    뜨는지, (2) 기관 세부분류(금융투자/보험/투신/사모펀드/은행/기타금융기관/연기금) 표가
+    토스 선택 시에만 나오는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("005930")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run(timeout=90)
+
+    source_radio = next(r for r in at.radio if r.label == "데이터 소스")
+    source_radio.set_value("토스증권 (거래량, 파일럿)")
+    at.run(timeout=90)
+    assert at.exception == []
+
+    metric_labels_with_unit = [m.value for m in at.metric if m.label in ("외국인", "기관", "개인")]
+    assert any("주" in v for v in metric_labels_with_unit)
+    assert any("직접 비교할 수 없습니다" in c.value for c in at.caption)
+
+    breakdown_df = next(
+        (df for df in at.dataframe if "금융투자" in df.value.reset_index().columns), None
+    )
+    assert breakdown_df is not None, "기관 세부분류 표가 렌더링되지 않음"
+    for label in ["금융투자", "보험", "투신", "사모펀드", "은행", "기타금융기관", "연기금"]:
+        assert label in breakdown_df.value.reset_index().columns
+
+
+@pytest.mark.network
+def test_stock_research_supply_source_toss_caching_no_duplicate_network_calls():
+    """캐싱 회귀 — 소스를 토스로 바꾼 뒤 재실행해도 토스 API가 다시 호출되지 않아야 한다
+    (st.cache_data 히트). views/_cache.py의 import-alias 문제(2026-08 KOFIA 라운드에서 겪음)를
+    피하려고 valley.toss.requests 레벨에서 직접 호출 횟수를 센다. ⚠️ 같은 프로세스의 다른
+    테스트가 이미 "005930"을 조회해 캐시가 미리 데워져 있을 수 있어(st.cache_data는 프로세스
+    전역), 이 테스트만 쓰는 다른 종목코드(000660)로 콜드 스타트를 보장한다."""
+    import valley.toss as toss_mod
+
+    get_calls = []
+    _orig_get = toss_mod.requests.get
+
+    def counting_get(*args, **kwargs):
+        get_calls.append(1)
+        return _orig_get(*args, **kwargs)
+
+    with patch("valley.toss.requests.get", side_effect=counting_get):
+        at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at.run()
+        at.text_input[0].input("000660")
+        next(b for b in at.button if b.label == "조회하기").click()
+        at.run(timeout=90)
+
+        source_radio = next(r for r in at.radio if r.label == "데이터 소스")
+        source_radio.set_value("토스증권 (거래량, 파일럿)")
+        at.run(timeout=90)
+        assert at.exception == []
+        calls_after_first_switch = len(get_calls)
+        assert calls_after_first_switch > 0
+
+        at.run(timeout=90)  # 재실행 — 캐시 히트라 추가 호출 없어야 함
+        assert len(get_calls) == calls_after_first_switch
 
 
 @pytest.mark.network
