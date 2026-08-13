@@ -38,6 +38,7 @@ from valley.peers import get_peer_tickers as _get_peer_tickers
 from valley.peers import get_roe_history as _get_roe_history
 from valley.peers import get_valuation_snapshot as _get_valuation_snapshot
 from valley.supply import get_investor_net_trading as _get_investor_net_trading
+from valley.toss import get_bond_yield_snapshot as _get_bond_yield_snapshot
 from valley.toss import get_credit_trades_history as _get_credit_trades_history
 from valley.toss import get_institution_breakdown_history as _get_institution_breakdown_history
 from valley.toss import get_investor_trading_history as _get_investor_trading_history
@@ -182,6 +183,13 @@ def get_credit_trades_history(symbol: str, days: int = 20):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_securities_lending_history(symbol: str, days: int = 20):
     return _get_securities_lending_history(symbol, days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_bond_yield_snapshot():
+    """수익률곡선 스냅샷 전용 — 항상 valley.toss.KR_BOND_SYMBOLS 6종 전체를 한 번에 조회한다
+    (인자 없음 — list 인자는 st.cache_data 해싱이 번거로워 단순하게 유지)."""
+    return _get_bond_yield_snapshot()
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

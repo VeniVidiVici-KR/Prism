@@ -509,9 +509,52 @@ INDICATORS = {
                 "ecos": {"stat_code": "901Y009", "cycle": "M", "item_code": "K01"},
             },
         ],
+        # ⚠️ 국채 라운드(2026-08) — 토스증권 market-indicators/prices가 지원하는 국채 심볼
+        # (KR_BOND_2Y~30Y, 실측 확인)을 일별 금리로 추가했다. 기존 KR_DGS10(FRED, 월별)은
+        # 절대 삭제하지 않았다 — (1) FRED가 훨씬 긴 장기 시계열을 갖고 있고(토스 candles는
+        # 실측 확인 결과 2021년 하반기까지만 소급 가능), (2) TOSS_CLIENT_ID/SECRET이 없는
+        # 사용자에게는 이게 유일한 한국 금리 소스다. 라벨에 "(일별, 토스)"/"(월별·장기,
+        # FRED)"를 명시해 절대 혼동하지 않게 했다. ⚠️ 단위 실측: 토스 lastPrice/closePrice는
+        # 이미 퍼센트(%) 값 그대로 온다(예: "4.295"=4.295%, 소수·bp 아님) — FRED
+        # IRLTLT01KRM156N 최신월(2026-06, 4.181%)과 교차검증한 결과 토스 최신값(2026-08-12,
+        # 4.295%)의 차이가 0.11%p로, 두 달 사이 금리가 완만히 오른 추세(3.485→4.181%)를
+        # 감안하면 상식적인 범위라 단위·정의가 같음을 확인했다. 토스 키가 없으면 이 6개
+        # 항목은 기존 ECOS 전용 지표(예: KR_CURRENT_ACCOUNT)와 동일한 패턴으로 버튼 클릭 시
+        # MacroDataError를 그대로 노출한다(별도 UI 분기 불필요 — get_indicator_series의
+        # toss_bond 디스패치가 TossDataError를 MacroDataError로 변환).
         "금리": [
             {"key": "KR_BASE_RATE", "label": "한국은행 기준금리", "fred_id": "IRSTCI01KRM156N"},
-            {"key": "KR_DGS10", "label": "10년 국고채금리", "fred_id": "IRLTLT01KRM156N"},
+            {
+                "key": "KR_DGS10", "label": "국고채 10년 (월별·장기, FRED)", "fred_id": "IRLTLT01KRM156N",
+                "description": "FRED 미러링 · 월별 · 장기 시계열 · 토스 키 없이도 조회 가능",
+            },
+            {
+                "key": "KR_BOND_2Y", "label": "국고채 2년 (일별, 토스)", "toss_bond": "KR_BOND_2Y",
+                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+            },
+            {
+                "key": "KR_BOND_3Y", "label": "국고채 3년 (일별, 토스)", "toss_bond": "KR_BOND_3Y",
+                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+            },
+            {
+                "key": "KR_BOND_5Y", "label": "국고채 5년 (일별, 토스)", "toss_bond": "KR_BOND_5Y",
+                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+            },
+            {
+                "key": "KR_BOND_10Y", "label": "국고채 10년 (일별, 토스)", "toss_bond": "KR_BOND_10Y",
+                "description": (
+                    "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요 · "
+                    "FRED 월별판(KR_DGS10)과 실측 대조 결과 0.11%p 차이(상승 추세 감안 시 상식적)"
+                ),
+            },
+            {
+                "key": "KR_BOND_20Y", "label": "국고채 20년 (일별, 토스)", "toss_bond": "KR_BOND_20Y",
+                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+            },
+            {
+                "key": "KR_BOND_30Y", "label": "국고채 30년 (일별, 토스)", "toss_bond": "KR_BOND_30Y",
+                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+            },
         ],
         # ⚠️ KOFIA(금융투자협회) 신용공여 라운드 — 코스피/코스닥 신용융자 잔고는 두 경로로
         # 나뉜다. (1) 여기(ECOS 901Y056/S23E): 월별, 코스피+코스닥 합계만, 1998년부터 장기
@@ -823,6 +866,19 @@ def get_indicator_series(key: str) -> pd.Series:
             if "fred_id" not in indicator:
                 raise  # FRED 폴백이 없는 ECOS 전용 지표 — 실패를 그대로 알린다
             # FRED 폴백이 있으면 계속 진행
+
+    toss_bond_symbol = indicator.get("toss_bond")
+    if toss_bond_symbol:
+        # 순환 임포트 방지 겸, 토스 지표를 안 쓰는 대다수 호출 경로에서 불필요한 임포트
+        # 비용을 피하려고 함수 안에서 지연 임포트한다(valley.toss는 valley.macro를
+        # 임포트하지 않으므로 순환 위험은 없지만, 카탈로그 전체 중 국채 몇 개만 쓰는
+        # 함수라 지연 임포트가 더 적절하다고 판단).
+        from valley.toss import TossDataError, get_bond_yield_history
+
+        try:
+            return get_bond_yield_history(toss_bond_symbol)
+        except TossDataError as e:
+            raise MacroDataError(str(e)) from e
 
     return get_fred_series(indicator["fred_id"])
 

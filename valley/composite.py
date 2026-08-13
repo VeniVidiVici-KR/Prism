@@ -30,12 +30,25 @@ COMPOSITE_INDICATORS = {
         {"key": "KR_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
         {"key": "KR_M2_GDP", "label": "M2 / 명목GDP"},
         {"key": "KR_EXPORTS_YOY", "label": "수출 증가율 (전년동월대비 %)"},
+        # ⚠️ 국채 라운드(2026-08) — 미국은 FRED가 이미 계산해 제공하는 장단기 금리차
+        # 시리즈(T10Y2Y/T10Y3M, INDICATORS["US"]["금리"]에 fred_id로 직접 등록)를 그대로
+        # 쓰지만, FRED는 한국 국채 스프레드를 제공하지 않는다 — 그래서 기존
+        # US_KR_RATE_SPREAD(한미 정책금리차)와 같은 "직접 빼는" 방식으로 계산한다. 토스
+        # 국채 카탈로그(KR_BOND_2Y/3Y/10Y)를 재사용하므로 TOSS_CLIENT_ID가 필요하다(없으면
+        # MacroDataError가 그대로 노출됨 — 새 에러 처리 불필요).
+        {"key": "KR_YIELD_SPREAD_10Y2Y", "label": "국채 장단기 금리차 (10Y-2Y, 토스 일별)"},
+        {"key": "KR_YIELD_SPREAD_10Y3Y", "label": "국채 장단기 금리차 (10Y-3Y, 토스 일별)"},
     ],
 }
 
 # 국가 구분이 없는(두 나라를 함께 봐야 하는) 지표.
 CROSS_COUNTRY_INDICATORS = [
     {"key": "US_KR_RATE_SPREAD", "label": "한미 정책금리차 (미국 - 한국)"},
+    # ⚠️ 국채 라운드(2026-08) — 위 정책금리차와는 다른 지표다. 정책금리는 중앙은행이
+    # 결정하는 값(자주 안 바뀜)이고, 국채10년은 시장이 매일 새로 매기는 장기금리라 성격이
+    # 다르다(예: 정책금리가 그대로여도 국채금리는 매일 움직인다). 둘 다 남겨 라벨로
+    # 구분한다 — 기존 정책금리차를 대체하지 않는다.
+    {"key": "US_KR_BOND10Y_SPREAD", "label": "한미 금리차 (국고채 10년, 토스 일별)"},
 ]
 
 
@@ -174,6 +187,36 @@ def _rate_spread() -> pd.Series:
     return (df["us"] - df["kr"]).dropna()
 
 
+def _kr_yield_spread(short_key: str) -> pd.Series:
+    """한국 국채 장단기 금리차 = 국고채10년(토스 일별) - short_key(토스 일별), 겹치는 구간만.
+
+    ⚠️ 미국의 T10Y2Y/T10Y3M은 FRED가 이미 계산해 제공하는 시리즈를 그대로 쓰지만(금리
+    카탈로그에 fred_id로 직접 등록), FRED는 한국 국채 스프레드를 제공하지 않아 기존
+    한미 정책금리차(_rate_spread)와 같은 "직접 빼는" 방식으로 계산한다.
+    """
+    long_rate = get_indicator_series("KR_BOND_10Y")
+    short_rate = get_indicator_series(short_key)
+    df = pd.concat([long_rate.rename("long"), short_rate.rename("short")], axis=1, join="inner")
+    if df.empty:
+        raise MacroDataError("한국 장단기 금리차를 계산할 만큼 겹치는 데이터가 없습니다.")
+    return (df["long"] - df["short"]).dropna()
+
+
+def _rate_spread_bond10y() -> pd.Series:
+    """한미 금리차(국고채10년) = 미국 10년 국채금리(FRED, 일별) - 한국 국고채10년(토스, 일별).
+
+    ⚠️ 기존 US_KR_RATE_SPREAD(정책금리차, 월별)와는 다른 지표다 — 정책금리는 중앙은행이
+    결정하는 값이고 국채10년은 시장이 매기는 장기금리라 성격이 다르다. 둘 다 일별이라
+    기존 정책금리차(월별 두 시리즈)보다 더 촘촘하게 겹친다.
+    """
+    us_rate = get_indicator_series("US_DGS10")
+    kr_rate = get_indicator_series("KR_BOND_10Y")
+    df = pd.concat([us_rate.rename("us"), kr_rate.rename("kr")], axis=1, join="inner")
+    if df.empty:
+        raise MacroDataError("한미 금리차(국고채10년)를 계산할 만큼 겹치는 데이터가 없습니다.")
+    return (df["us"] - df["kr"]).dropna()
+
+
 _COMPUTE = {
     "US_CPI_YOY": lambda: _cpi_yoy("US"),
     "KR_CPI_YOY": lambda: _cpi_yoy("KR"),
@@ -183,6 +226,9 @@ _COMPUTE = {
     "KR_M2_GDP": lambda: _m2_to_gdp("KR"),
     "KR_EXPORTS_YOY": _exports_yoy,
     "US_KR_RATE_SPREAD": _rate_spread,
+    "KR_YIELD_SPREAD_10Y2Y": lambda: _kr_yield_spread("KR_BOND_2Y"),
+    "KR_YIELD_SPREAD_10Y3Y": lambda: _kr_yield_spread("KR_BOND_3Y"),
+    "US_KR_BOND10Y_SPREAD": _rate_spread_bond10y,
 }
 
 

@@ -392,6 +392,132 @@ def test_macro_indicator_underlying_inflation_in_overlay_options():
 
 
 @pytest.mark.network
+def test_macro_indicator_kr_bond_catalog_buttons_and_fred_relabel():
+    """국채 라운드(2026-08) — 한국 '금리' 카테고리에 기존 FRED 월별(KR_DGS10, 라벨만 변경)과
+    새 토스 일별 6종이 함께 있어야 하고, 둘 다 정상 동작해야 한다(회귀 없음)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+
+    labels = [b.label for b in at.button]
+    assert "국고채 10년 (월별·장기, FRED)" in labels  # 기존 KR_DGS10, 라벨만 변경(회귀 아님)
+    for maturity in ["2년", "3년", "5년", "10년", "20년", "30년"]:
+        assert f"국고채 {maturity} (일별, 토스)" in labels
+
+    # 새 토스 일별 버튼 클릭 — 정상 렌더링
+    next(b for b in at.button if b.label == "국고채 10년 (일별, 토스)").click()
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("국고채 10년 (일별, 토스)" in m.value for m in at.markdown)
+
+    # 기존 FRED 월별 버튼도 여전히 정상 동작(회귀 확인)
+    next(b for b in at.button if b.label == "국고채 10년 (월별·장기, FRED)").click()
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("국고채 10년 (월별·장기, FRED)" in m.value for m in at.markdown)
+
+
+@pytest.mark.network
+def test_macro_indicator_kr_yield_curve_full_flow():
+    """수익률곡선 스냅샷 — 6개 만기가 순서대로 나오고, 상식적인 범위(1~10%)이며, 우상향/역전
+    판정 캡션이 뜨는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+
+    next(b for b in at.button if b.label == "수익률곡선 불러오기").click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    curve_df = next(df for df in at.dataframe if "수익률(%)" in df.value.reset_index().columns).value
+    assert list(curve_df.index) == ["2Y", "3Y", "5Y", "10Y", "20Y", "30Y"]
+    assert (curve_df["수익률(%)"] > 1.0).all() and (curve_df["수익률(%)"] < 10.0).all()
+
+    assert any("곡선 형태" in c.value for c in at.caption)
+    assert any("기준 시각" in c.value and "timestamp" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_macro_indicator_kr_yield_spread_composite_buttons():
+    """국채 라운드 STEP 2-1 — 새 혼합지표 3종(국채10Y-2Y, 10Y-3Y, 한미 국고채10년 금리차)이
+    기존 한미 정책금리차와 함께 렌더링되고 정상 클릭되는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+
+    labels = [b.label for b in at.button]
+    assert "국채 장단기 금리차 (10Y-2Y, 토스 일별)" in labels
+    assert "국채 장단기 금리차 (10Y-3Y, 토스 일별)" in labels
+    assert "한미 금리차 (국고채 10년, 토스 일별)" in labels
+    assert "한미 정책금리차 (미국 - 한국)" in labels  # 기존 지표, 대체되지 않음(회귀 확인)
+
+    next(b for b in at.button if "10Y-2Y" in b.label).click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+
+def test_macro_indicator_kr_bond_missing_key_hides_load_button(monkeypatch):
+    """토스 키가 없으면 수익률곡선 섹션은 안내만 뜨고 로드 버튼이 없어야 하며, 앱이 죽지
+    않아야 한다(fast tier — 네트워크 불필요)."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "")
+    with patch("dotenv.load_dotenv", return_value=True):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        country_radio = next(r for r in at.radio if r.label == "국가")
+        country_radio.set_value("한국")
+        at.run(timeout=90)
+    assert at.exception == []
+    assert any("TOSS_CLIENT_ID" in i.value for i in at.info)
+    assert next((b for b in at.button if b.label == "수익률곡선 불러오기"), None) is None
+
+
+@pytest.mark.network
+def test_stock_research_coe_source_label_toss_vs_fred_fallback():
+    """국채 라운드 STEP 3 — COE 자동제안 안내 문구에 소스가 명시돼야 한다: 토스 키가 있으면
+    "토스 일별", 없으면 "FRED 월별 폴백"으로 자동 전환되고 값도 계속 계산돼야 한다(앱이
+    죽지 않음)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("005930")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run(timeout=90)
+    checkbox = next(c for c in at.checkbox if "COE 자동제안" in c.label)
+    checkbox.set_value(True)
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("토스 일별" in i.value for i in at.info if "무위험이자율" in i.value)
+
+    # ⚠️ valley.toss._token_cache는 프로세스 전역 싱글턴이라, 위 at에서 이미 발급받은 토큰이
+    # 남아있으면 아래에서 TOSS_CLIENT_ID를 지워도 재발급을 시도하지 않고 캐시된 토큰을 그대로
+    # 재사용해버려 폴백이 트리거되지 않는다 — 강제로 무효화해 실제로 빈 키로 재발급을
+    # 시도하게 만든다.
+    import valley.toss as toss_mod
+
+    toss_mod._token_cache = toss_mod._TokenCache()
+
+    with patch.dict("os.environ", {"TOSS_CLIENT_ID": "", "TOSS_CLIENT_SECRET": ""}), \
+         patch("dotenv.load_dotenv", return_value=True):
+        at2 = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at2.run()
+        at2.text_input[0].input("005930")
+        next(b for b in at2.button if b.label == "조회하기").click()
+        at2.run(timeout=90)
+        checkbox2 = next(c for c in at2.checkbox if "COE 자동제안" in c.label)
+        checkbox2.set_value(True)
+        at2.run(timeout=90)
+    toss_mod._token_cache = toss_mod._TokenCache()  # 다른 테스트에 영향 없게 복구
+    assert at2.exception == []
+    assert any("FRED 월별 폴백" in i.value for i in at2.info if "무위험이자율" in i.value)
+
+
+@pytest.mark.network
 def test_macro_indicator_bond_issuance_full_flow():
     """신용시장 라운드 PART B — 여러 기업의 424B(발행설명서) 공시를 통합 조회한다.
     (1) 자동 로드 없이 버튼 클릭 시에만 조회되는지, (2) 재실행 시 캐시로 재조회 없이

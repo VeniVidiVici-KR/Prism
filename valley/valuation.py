@@ -15,20 +15,31 @@ class CoeSuggestionUnavailableError(Exception):
 
 
 # 통화 -> (무위험이자율로 쓸 INDICATORS 카탈로그 key, 사람이 읽을 출처 라벨)
+# ⚠️ 국채 라운드(2026-08) — KRW는 토스 일별(KR_BOND_10Y)을 우선 쓰고, 실패(키 없음/네트워크/
+# rate limit 등 무엇이든)하면 기존 FRED 월별(KR_DGS10)로 폴백한다(아래 suggest_coe 본문
+# 참고). USD는 이번 라운드에서 건드리지 않았다(US_DGS10은 원래도 FRED 일별이라 개선
+# 대상이 아님) — 폴백이 필요 없어 튜플 하나로 충분하다.
 _COE_RF_INDICATOR_BY_CURRENCY = {
     "USD": ("US_DGS10", "미국 10년 국채금리"),
-    "KRW": ("KR_DGS10", "한국 10년 국고채금리"),
+    "KRW": ("KR_BOND_10Y", "한국 10년 국고채금리(토스 일별)"),
 }
+_KR_COE_FALLBACK_KEY = "KR_DGS10"
+_KR_COE_FALLBACK_LABEL = "한국 10년 국고채금리(FRED 월별 폴백)"
 
 
 def suggest_coe(currency: str, risk_premium: float) -> dict:
     """무위험이자율(Rf, 실측) + 리스크 프리미엄(ERP, 사용자 가정)으로 COE를 제안한다.
 
-    Rf는 종목 통화에 맞는 10년 국채금리를 FRED에서 조회한 최신값을 그대로 쓴다. ERP(주식
-    리스크 프리미엄)는 무료 데이터로 신뢰성 있게 추정할 방법이 없어(그럴듯하지만 근거가
-    약한 값이 나올 위험) 자동 추정을 시도하지 않고 사용자가 직접 정하는 가정치로 둔다 —
-    실측(Rf)과 가정(ERP)을 섞지 않고 각각 무엇인지 호출부가 구분해 표시할 수 있도록 dict로
-    나눠 반환한다.
+    Rf는 종목 통화에 맞는 10년 국채금리의 최신값을 그대로 쓴다. ERP(주식 리스크 프리미엄)는
+    무료 데이터로 신뢰성 있게 추정할 방법이 없어(그럴듯하지만 근거가 약한 값이 나올 위험)
+    자동 추정을 시도하지 않고 사용자가 직접 정하는 가정치로 둔다 — 실측(Rf)과 가정(ERP)을
+    섞지 않고 각각 무엇인지 호출부가 구분해 표시할 수 있도록 dict로 나눠 반환한다.
+
+    ⚠️ KRW는 토스증권 일별 국채금리(KR_BOND_10Y)를 우선 쓴다 — 실패하면(TOSS_CLIENT_ID
+    없음/네트워크 오류/rate limit 등 원인 불문) 기존 FRED 월별(KR_DGS10)로 조용히 폴백한다
+    (토스 키가 없는 사용자의 기존 동작이 그대로 유지된다). 어느 소스를 썼는지는
+    rf_source_label에 "(토스 일별)"/"(FRED 월별 폴백)"로 구분해 담는다 — 호출부가 그대로
+    표시하면 된다.
 
     Args:
         currency: 종목 통화 ("USD" 또는 "KRW"만 지원. 그 외는 자동제안 불가).
@@ -36,11 +47,12 @@ def suggest_coe(currency: str, risk_premium: float) -> dict:
 
     Returns:
         {"coe": Rf+ERP, "rf": 실측 무위험이자율(비율), "risk_premium": ERP,
-         "rf_source_label": 출처 한글 라벨, "rf_source_key": INDICATORS 카탈로그 key,
-         "rf_as_of": Rf의 관측 시점(Timestamp)}
+         "rf_source_label": 출처 한글 라벨(소스 구분 포함), "rf_source_key": INDICATORS
+         카탈로그 key, "rf_as_of": Rf의 관측 시점(Timestamp)}
 
     Raises:
-        CoeSuggestionUnavailableError: 통화 미지원이거나 Rf 조회 자체가 실패했을 때.
+        CoeSuggestionUnavailableError: 통화 미지원이거나 (KRW는 토스+FRED 폴백 둘 다) Rf
+        조회 자체가 실패했을 때.
     """
     if currency not in _COE_RF_INDICATOR_BY_CURRENCY:
         raise CoeSuggestionUnavailableError(f"'{currency}' 통화는 COE 자동제안을 지원하지 않습니다 (USD/KRW만 지원).")
@@ -49,11 +61,23 @@ def suggest_coe(currency: str, risk_premium: float) -> dict:
     try:
         rf_series = get_indicator_series(indicator_key)
     except Exception as e:
-        # get_indicator_series는 보통 MacroDataError만 던지지만, 이 함수는 "Rf 조회 실패 시
-        # 앱이 죽으면 안 된다"는 요구사항이 있어 예상 밖의 예외까지 폭넓게 막는다.
-        raise CoeSuggestionUnavailableError(f"무위험이자율({label}) 조회에 실패했습니다: {e}") from e
+        if currency == "KRW":
+            # 토스 실패 -> 기존 FRED 월별로 폴백(이 분기가 곧 "토스 키 없는 사용자의 기존
+            # 동작 보존" 요구사항이다 — TOSS_CLIENT_ID가 없으면 get_indicator_series가
+            # 즉시 MacroDataError를 던지므로 네트워크 지연 없이 바로 이 폴백으로 넘어간다).
+            try:
+                rf_series = get_indicator_series(_KR_COE_FALLBACK_KEY)
+                indicator_key, label = _KR_COE_FALLBACK_KEY, _KR_COE_FALLBACK_LABEL
+            except Exception as e2:
+                raise CoeSuggestionUnavailableError(
+                    f"무위험이자율({_KR_COE_FALLBACK_LABEL}) 조회에 실패했습니다: {e2}"
+                ) from e2
+        else:
+            # get_indicator_series는 보통 MacroDataError만 던지지만, 이 함수는 "Rf 조회
+            # 실패 시 앱이 죽으면 안 된다"는 요구사항이 있어 예상 밖의 예외까지 폭넓게 막는다.
+            raise CoeSuggestionUnavailableError(f"무위험이자율({label}) 조회에 실패했습니다: {e}") from e
 
-    rf = float(rf_series.iloc[-1]) / 100  # FRED 국채금리는 퍼센트 값(예: 4.18)이라 비율로 환산
+    rf = float(rf_series.iloc[-1]) / 100  # 국채금리는 퍼센트 값(예: 4.18)이라 비율로 환산
     return {
         "coe": rf + risk_premium,
         "rf": rf,

@@ -1,10 +1,12 @@
 """valley/composite.py 순수 함수 단위테스트 (yoy_percent, compute_cpi_contributions,
 mom_change, mom_percent — 고용보고서 라운드에서 추가)."""
 
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
-from valley.composite import compute_cpi_contributions, mom_change, mom_percent, yoy_percent
+from valley.composite import MacroDataError, compute_cpi_contributions, get_composite_series, mom_change, mom_percent, yoy_percent
 
 
 def test_yoy_percent_basic():
@@ -87,3 +89,65 @@ def test_mom_percent_matches_yoy_percent_with_periods_one():
     pd.testing.assert_series_equal(mom, equivalent)
     # 평균 시간당 임금처럼 소폭(0.1~0.4%대) 변화가 나오는지도 확인.
     assert 0.0 < mom.iloc[-1] < 1.0
+
+
+# ── 국채 라운드(2026-08)에서 추가한 금리차 3종. get_indicator_series를 mock해 실제 네트워크
+# 없이 "직접 빼는" 계산 로직만 검증한다(⚠️ valley.composite는 get_indicator_series를
+# `from valley.macro import ... get_indicator_series`로 직접 바인딩하므로, mock 대상은
+# "valley.composite.get_indicator_series"여야 한다 — KOFIA 라운드에서 겪은 import-alias
+# 문제와 동일한 이유). ──────────────────────────────────────────────────────────────
+
+
+def _series(values, dates):
+    return pd.Series(values, index=pd.to_datetime(dates))
+
+
+def test_kr_yield_spread_10y2y_subtracts_directly():
+    """⚠️ 핵심 회귀 — 미국 T10Y2Y(FRED 사전계산)와 달리 한국은 FRED에 없어 10Y-2Y를 직접
+    뺀다(기존 한미 정책금리차와 동일한 패턴)."""
+    long_series = _series([4.30, 4.29], ["2026-08-11", "2026-08-12"])
+    short_series = _series([3.62, 3.63], ["2026-08-11", "2026-08-12"])
+
+    def fake_get_indicator_series(key):
+        return {"KR_BOND_10Y": long_series, "KR_BOND_2Y": short_series}[key]
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake_get_indicator_series):
+        result = get_composite_series("KR_YIELD_SPREAD_10Y2Y")
+    assert result.iloc[-1] == pytest.approx(4.29 - 3.63)
+    assert result.iloc[0] == pytest.approx(4.30 - 3.62)
+
+
+def test_kr_yield_spread_10y3y_uses_3y_not_2y():
+    """10Y-3Y와 10Y-2Y가 서로 다른 단기물을 참조하는지(오타로 같은 걸 두 번 빼지 않는지) 확인."""
+    long_series = _series([4.29], ["2026-08-12"])
+    short_series = _series([3.80], ["2026-08-12"])
+
+    def fake_get_indicator_series(key):
+        assert key in ("KR_BOND_10Y", "KR_BOND_3Y")
+        return {"KR_BOND_10Y": long_series, "KR_BOND_3Y": short_series}[key]
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake_get_indicator_series):
+        result = get_composite_series("KR_YIELD_SPREAD_10Y3Y")
+    assert result.iloc[-1] == pytest.approx(4.29 - 3.80)
+
+
+def test_us_kr_bond10y_spread_distinct_from_policy_spread():
+    """⚠️ 핵심 회귀 — 국고채10년 기준 한미 금리차(US_DGS10 - KR_BOND_10Y)는 기존
+    US_KR_RATE_SPREAD(정책금리차, FEDFUNDS - KR_BASE_RATE)와 다른 키·다른 소스여야 한다."""
+    us_series = _series([4.69], ["2026-08-12"])
+    kr_series = _series([4.295], ["2026-08-12"])
+
+    def fake_get_indicator_series(key):
+        assert key in ("US_DGS10", "KR_BOND_10Y")  # 정책금리(FEDFUNDS/KR_BASE_RATE)를 쓰면 안 됨
+        return {"US_DGS10": us_series, "KR_BOND_10Y": kr_series}[key]
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake_get_indicator_series):
+        result = get_composite_series("US_KR_BOND10Y_SPREAD")
+    assert result.iloc[-1] == pytest.approx(4.69 - 4.295)
+
+
+def test_kr_yield_spread_raises_macro_data_error_when_no_overlap():
+    empty = pd.Series([], dtype=float, index=pd.DatetimeIndex([]))
+    with patch("valley.composite.get_indicator_series", return_value=empty):
+        with pytest.raises(MacroDataError):
+            get_composite_series("KR_YIELD_SPREAD_10Y2Y")

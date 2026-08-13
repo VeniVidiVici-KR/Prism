@@ -28,6 +28,18 @@ DEFAULT_TRADING_DAYS = 20
 _MAX_PAGE_COUNT = 100  # 실측 확인: count 파라미터는 1~100만 허용(초과 시 400 invalid-request)
 _TOKEN_EXPIRY_BUFFER_SECONDS = 300  # 만료 5분 전에 미리 재발급(경계에서 401 왕복 방지)
 
+# ⚠️ market-indicators/{symbol}/candles 전용 상수 — investor-trading류 4개 엔드포인트와
+# 페이지네이션 구조가 다름을 실측 확인했다(2026-08 국채 라운드): count 최대 200(100 아님),
+# 커서 파라미터명이 until이 아니라 before, 응답 커서 필드가 nextUntil이 아니라 nextBefore,
+# interval 파라미터가 필수(허용값 "1m"/"1d"만, 그 외 값은 400).
+_MAX_CANDLE_COUNT = 200
+DEFAULT_BOND_HISTORY_DAYS = 500  # 약 2~3페이지치 — 여러 금리 인상/인하 국면을 볼 수 있는 정도
+
+# market-indicators/prices가 지원하는 국채 심볼 전체(실측 확인, 2026-08 국채 라운드) — 오류
+# 응답의 allowedValues 필드가 그대로 알려준 전체 목록. 만기 순서를 그대로 유지해 수익률곡선
+# x축 정렬에도 재사용한다.
+KR_BOND_SYMBOLS = ["KR_BOND_2Y", "KR_BOND_3Y", "KR_BOND_5Y", "KR_BOND_10Y", "KR_BOND_20Y", "KR_BOND_30Y"]
+
 # investor-trading 응답의 institution.breakdown 필드명 -> 한국어 라벨. 실측(005930) 확인 순서
 # 그대로 유지 — 금융투자/보험/투신/사모펀드/은행/기타금융기관/연기금 7종.
 INSTITUTION_BREAKDOWN_LABELS = {
@@ -327,3 +339,55 @@ def get_institution_breakdown_history(symbol: str, days: int = DEFAULT_TRADING_D
     df["날짜"] = pd.to_datetime(df["날짜"])
     df = df.set_index("날짜").sort_index()
     return df
+
+
+def get_bond_yield_history(symbol: str, days: int = DEFAULT_BOND_HISTORY_DAYS) -> pd.Series:
+    """국채 심볼(KR_BOND_2Y 등)의 일별 종가(수익률, %)를 시계열로 반환한다.
+
+    ⚠️ candles 엔드포인트는 investor-trading류 4개 엔드포인트와 페이지네이션 구조가 다르다
+    (실측 확인) — count 최대 200, 커서 파라미터명 before(응답 필드는 nextBefore), interval
+    파라미터 필수("1d"). ⚠️ closePrice는 이미 퍼센트(%) 값 그대로 온다(예: "4.295" =
+    4.295%, FRED 지수 계열처럼 별도 변환이 필요 없다) — FRED와 교차검증(2026-08 국채
+    라운드, KR_BOND_10Y 최신 4.295% vs FRED IRLTLT01KRM156N 최신월 4.181%, 차이 0.11%p로
+    두 달간 상승 추세를 감안하면 상식적) 결과도 이를 뒷받침한다.
+    """
+    values: dict[str, float] = {}
+    before: str | None = None
+    while len(values) < days:
+        params: dict = {"interval": "1d", "count": min(_MAX_CANDLE_COUNT, days - len(values) + 10)}
+        if before:
+            params["before"] = before
+        data = _request(f"/market-indicators/{symbol}/candles", params)
+        result = data.get("result", {})
+        candles = result.get("candles", [])
+        if not candles:
+            break
+        for c in candles:
+            values[c["timestamp"][:10]] = float(c["closePrice"])
+        before = result.get("nextBefore")
+        if not before:
+            break
+
+    if not values:
+        raise TossDataError(f"'{symbol}' 국채 시세 데이터가 없습니다.")
+
+    series = pd.Series(values)
+    series.index = pd.to_datetime(series.index)
+    return series.sort_index()
+
+
+def get_bond_yield_snapshot(symbols: list[str] = KR_BOND_SYMBOLS) -> dict[str, float]:
+    """여러 국채 심볼의 최신 수익률(%)을 market-indicators/prices로 한 번에 조회한다
+    (수익률곡선 스냅샷 전용 — 콤마로 구분해 한 번에 요청하면 심볼 수만큼 호출할 필요가
+    없다, 실측 확인).
+
+    ⚠️ 응답의 timestamp 필드는 null로 온다(실측 확인) — 정확한 기준 시각은 알 수 없지만,
+    candles의 최신 종가와 정확히 일치함을 실측 대조로 확인했다(전 거래일 종가 기준으로
+    추정). 호출부가 "최근 거래일 종가 기준"임을 캡션 등으로 명시해야 한다.
+    """
+    data = _request("/market-indicators/prices", {"symbols": ",".join(symbols)})
+    result = data.get("result", [])
+    values = {item["symbol"]: float(item["lastPrice"]) for item in result if item.get("lastPrice") is not None}
+    if not values:
+        raise TossDataError("국채 시세 데이터를 가져오지 못했습니다.")
+    return values

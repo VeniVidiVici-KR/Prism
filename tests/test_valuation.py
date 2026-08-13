@@ -1,17 +1,25 @@
 """valley/valuation.py 순수 함수 단위테스트.
 
-⚠️ 네트워크를 타지 않는 함수만 대상으로 한다(suggest_coe는 FRED 조회가 필요해 제외 —
-AppTest 회귀에서 실제 페이지 흐름의 일부로 간접 검증된다). 각 함수의 정상 케이스뿐 아니라
-과거 라운드에서 실측으로 발견한 엣지 케이스를 그대로 고정한다.
+⚠️ 네트워크를 타지 않는 함수만 대상으로 한다(suggest_coe는 FRED/토스 조회가 필요해 원래
+제외 — AppTest 회귀에서 실제 페이지 흐름의 일부로 간접 검증된다). 각 함수의 정상 케이스뿐
+아니라 과거 라운드에서 실측으로 발견한 엣지 케이스를 그대로 고정한다.
+
+⚠️ 예외 — suggest_coe의 "토스 실패 시 FRED로 폴백" 분기(2026-08 국채 라운드 추가)는
+get_indicator_series를 mock해서 실제 네트워크 없이 검증한다. 이 분기는 실제 시세 조회가
+아니라 "어느 소스를 선택하는가"라는 순수 분기 로직이라, 위 방침이 막으려는 "실제 조회
+테스트"에 해당하지 않는다고 판단했다 — 회귀 위험이 큰 로직(COE가 DCF 결과를 직접 바꿈)이라
+mock으로라도 고정해두는 게 낫다.
 """
 
 import math
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from valley.valuation import (
     DEFAULT_STATUTORY_TAX_RATE,
+    CoeSuggestionUnavailableError,
     FcffInputsUnavailableError,
     ImpliedGrowthNotFoundError,
     capm_coe,
@@ -27,6 +35,7 @@ from valley.valuation import (
     justified_pbr,
     sensitivity_grid,
     simplified_dcf,
+    suggest_coe,
 )
 
 
@@ -415,3 +424,68 @@ def test_fcff_dcf_matches_simplified_dcf_when_unlevered_and_no_interest():
     assert fcff_result["enterprise_value"] == pytest.approx(simplified["equity_value"])
     assert fcff_result["equity_value"] == pytest.approx(simplified["equity_value"])
     assert fcff_result["intrinsic_value_per_share"] == pytest.approx(simplified["intrinsic_value_per_share"])
+
+
+# ── suggest_coe (국채 라운드 2026-08 — 토스 우선/FRED 폴백, get_indicator_series mock) ──────
+
+
+def _series(value, date="2026-08-12"):
+    return pd.Series([value], index=pd.to_datetime([date]))
+
+
+class MacroDataErrorForTest(Exception):
+    """valley.macro.MacroDataError를 흉내낸 더미 예외 — suggest_coe는 Exception 전체를
+    잡으므로(주석에 명시된 대로 "예상 밖의 예외까지 폭넓게 막는다") 실제 MacroDataError를
+    임포트하지 않고도 분기 검증이 가능하다."""
+
+
+def test_suggest_coe_krw_uses_toss_bond_when_available():
+    """토스가 정상 응답하면 KR_BOND_10Y(토스 일별)를 쓰고, 출처 라벨에 "토스 일별"이 명시돼야
+    한다."""
+    with patch("valley.valuation.get_indicator_series", return_value=_series(4.295)) as mock_fn:
+        result = suggest_coe("KRW", 0.05)
+    mock_fn.assert_called_once_with("KR_BOND_10Y")
+    assert result["rf"] == pytest.approx(0.04295)
+    assert result["coe"] == pytest.approx(0.04295 + 0.05)
+    assert "토스 일별" in result["rf_source_label"]
+    assert result["rf_source_key"] == "KR_BOND_10Y"
+
+
+def test_suggest_coe_krw_falls_back_to_fred_when_toss_fails():
+    """⚠️ 핵심 회귀 — 토스 조회가 실패하면(키 없음/네트워크 등 무엇이든) 예외 없이 기존
+    KR_DGS10(FRED 월별)으로 폴백해야 한다. 폴백 시에도 COE 계산 자체는 정상 완료돼야
+    하고, 출처 라벨에 "FRED 월별 폴백"이 명시돼야 한다(어느 소스를 썼는지 화면에 표시하기
+    위함)."""
+    call_log = []
+
+    def fake_get_indicator_series(key):
+        call_log.append(key)
+        if key == "KR_BOND_10Y":
+            raise MacroDataErrorForTest("TOSS_CLIENT_ID가 설정되어 있지 않습니다.")
+        assert key == "KR_DGS10"
+        return _series(4.181, date="2026-06-01")
+
+    with patch("valley.valuation.get_indicator_series", side_effect=fake_get_indicator_series):
+        result = suggest_coe("KRW", 0.05)
+
+    assert call_log == ["KR_BOND_10Y", "KR_DGS10"]  # 토스 먼저 시도 -> 실패 -> FRED 폴백
+    assert result["rf"] == pytest.approx(0.04181)
+    assert result["coe"] == pytest.approx(0.04181 + 0.05)
+    assert "FRED 월별 폴백" in result["rf_source_label"]
+    assert result["rf_source_key"] == "KR_DGS10"
+
+
+def test_suggest_coe_krw_raises_when_both_toss_and_fred_fail():
+    """토스·FRED 둘 다 실패하는 극단적 상황에서도 앱이 안 죽고 명확한 예외로 처리돼야 한다."""
+    with patch("valley.valuation.get_indicator_series", side_effect=MacroDataErrorForTest("조회 실패")):
+        with pytest.raises(CoeSuggestionUnavailableError):
+            suggest_coe("KRW", 0.05)
+
+
+def test_suggest_coe_usd_path_unchanged_no_fallback_branch():
+    """⚠️ 회귀 확인 — USD는 이번 라운드에서 건드리지 않았다. 실패해도 KRW식 폴백을 시도하지
+    않고 바로 CoeSuggestionUnavailableError를 던져야 한다(US_DGS10 한 번만 호출)."""
+    with patch("valley.valuation.get_indicator_series", side_effect=MacroDataErrorForTest("실패")) as mock_fn:
+        with pytest.raises(CoeSuggestionUnavailableError):
+            suggest_coe("USD", 0.05)
+    mock_fn.assert_called_once_with("US_DGS10")

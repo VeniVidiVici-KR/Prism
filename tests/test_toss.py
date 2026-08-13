@@ -16,6 +16,8 @@ import pytest
 import valley.toss as toss_mod
 from valley.toss import (
     TossDataError,
+    get_bond_yield_history,
+    get_bond_yield_snapshot,
     get_credit_trades_history,
     get_institution_breakdown_history,
     get_investor_trading_history,
@@ -405,3 +407,129 @@ def test_risk_indicator_functions_reuse_shared_request_and_pagination(monkeypatc
         get_credit_trades_history("005930", days=2)
         get_securities_lending_history("005930", days=2)
     assert mock_post.call_count == 1  # 3개 지표를 조회해도 토큰 발급은 1회뿐
+
+
+# ── 한국 국채(수익률곡선) — 2026-08 국채 라운드에서 추가. 고정 데이터는 실측(KR_BOND_10Y)으로
+# 확인한 실제 응답 구조를 그대로 재현한다. ──────────────────────────────────────────
+
+_CANDLES_PAGE1 = {
+    "result": {
+        "candles": [
+            {
+                "timestamp": "2026-08-12T00:00:00.000+09:00",
+                "openPrice": "4.29",
+                "highPrice": "4.319",
+                "lowPrice": "4.288",
+                "closePrice": "4.295",
+                "volume": "509000000000",
+            },
+            {
+                "timestamp": "2026-08-11T00:00:00.000+09:00",
+                "openPrice": "4.295",
+                "highPrice": "4.306",
+                "lowPrice": "4.27",
+                "closePrice": "4.303",
+                "volume": "480000000000",
+            },
+        ],
+        "nextBefore": "2026-08-11T00:00:00.000+09:00",
+    }
+}
+
+_CANDLES_PAGE2 = {
+    "result": {
+        "candles": [
+            {
+                "timestamp": "2026-08-10T00:00:00.000+09:00",
+                "openPrice": "4.24",
+                "highPrice": "4.25",
+                "lowPrice": "4.22",
+                "closePrice": "4.241",
+                "volume": "300000000000",
+            },
+        ],
+        "nextBefore": None,
+    }
+}
+
+_PRICES_ALL_BONDS = {
+    "result": [
+        {"symbol": "KR_BOND_2Y", "timestamp": None, "lastPrice": "3.63"},
+        {"symbol": "KR_BOND_3Y", "timestamp": None, "lastPrice": "3.799"},
+        {"symbol": "KR_BOND_5Y", "timestamp": None, "lastPrice": "4.029"},
+        {"symbol": "KR_BOND_10Y", "timestamp": None, "lastPrice": "4.295"},
+        {"symbol": "KR_BOND_20Y", "timestamp": None, "lastPrice": "4.654"},
+        {"symbol": "KR_BOND_30Y", "timestamp": None, "lastPrice": "4.686"},
+    ]
+}
+
+
+def test_get_bond_yield_history_parses_close_price_as_percent(monkeypatch):
+    """⚠️ 핵심 회귀 — closePrice는 이미 퍼센트(%) 값 그대로 온다(실측 확인, FRED 지수 계열과
+    달리 변환 불필요). 값 자체를 100배/소수 변환 없이 그대로 통과시켜야 한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)), \
+         patch("valley.toss.requests.get", return_value=_mock_response(200, _CANDLES_PAGE1)):
+        series = get_bond_yield_history("KR_BOND_10Y", days=2)
+
+    assert len(series) == 2
+    assert series.iloc[-1] == pytest.approx(4.295)  # 2026-08-12 종가, 소수/퍼센트 변환 없음
+    assert series.index[-1] == pd.Timestamp("2026-08-12")
+
+
+def test_get_bond_yield_history_paginates_with_before_cursor(monkeypatch):
+    """⚠️ 핵심 회귀 — candles는 investor-trading류(until/nextUntil)와 커서 파라미터명이
+    다르다(실측 확인: before/nextBefore). 페이지네이션이 올바른 파라미터명을 쓰는지 확인한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)), \
+         patch(
+             "valley.toss.requests.get",
+             side_effect=[_mock_response(200, _CANDLES_PAGE1), _mock_response(200, _CANDLES_PAGE2)],
+         ) as mock_get:
+        series = get_bond_yield_history("KR_BOND_10Y", days=3)
+
+    assert len(series) == 3
+    assert series.iloc[0] == pytest.approx(4.241)  # 가장 오래된(2026-08-10) 값
+    second_call_params = mock_get.call_args_list[1].kwargs["params"]
+    assert second_call_params["before"] == "2026-08-11T00:00:00.000+09:00"
+    assert second_call_params["interval"] == "1d"  # interval 파라미터 필수(실측 확인)
+
+
+def test_get_bond_yield_snapshot_returns_all_symbols_in_one_call(monkeypatch):
+    """⚠️ 핵심 회귀 — market-indicators/prices는 콤마로 구분한 심볼을 한 번에 조회할 수 있다
+    (실측 확인) — 6개 심볼을 심볼당 1회씩 6번 부르지 않고 1번만 불러야 한다."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)), \
+         patch("valley.toss.requests.get", return_value=_mock_response(200, _PRICES_ALL_BONDS)) as mock_get:
+        snapshot = get_bond_yield_snapshot()
+
+    assert mock_get.call_count == 1
+    assert snapshot == {
+        "KR_BOND_2Y": 3.63,
+        "KR_BOND_3Y": 3.799,
+        "KR_BOND_5Y": 4.029,
+        "KR_BOND_10Y": 4.295,
+        "KR_BOND_20Y": 4.654,
+        "KR_BOND_30Y": 4.686,
+    }
+    # 만기가 길수록 수익률이 높은 정상(우상향) 곡선인지 — 상식성 확인
+    ordered = [snapshot[k] for k in toss_mod.KR_BOND_SYMBOLS]
+    assert ordered == sorted(ordered)
+
+
+def test_bond_functions_reuse_shared_request_no_new_auth_logic(monkeypatch):
+    """⚠️ 요구사항 — 국채 함수들도 토큰 캐싱을 새로 만들지 않고 기존 _request()를 재사용해야
+    한다(토큰 발급은 1회만)."""
+    monkeypatch.setenv("TOSS_CLIENT_ID", "dummy-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "dummy-secret")
+    with patch("valley.toss.requests.post", return_value=_mock_response(200, _TOKEN_SUCCESS)) as mock_post, \
+         patch(
+             "valley.toss.requests.get",
+             side_effect=[_mock_response(200, _CANDLES_PAGE1), _mock_response(200, _PRICES_ALL_BONDS)],
+         ):
+        get_bond_yield_history("KR_BOND_10Y", days=2)
+        get_bond_yield_snapshot()
+    assert mock_post.call_count == 1
