@@ -20,8 +20,24 @@ from valley.macro import MacroDataError, get_indicator_series
 _KR_GDP_UNIT_SCALE = 1000
 
 COMPOSITE_INDICATORS = {
+    # ⚠️ 물가 재편 라운드(2026-08) — 근원 CPI에 MoM 변화율이 없는 등 시장이 CPI 발표일에
+    # 보는 변화율 조합이 카탈로그에 빠져 있었다. 기존 US_CPI_YOY(이미 있음, 확인만)를 빼면
+    # 7개가 새로 필요했다: 근원 CPI YoY/MoM, 헤드라인 CPI MoM, PCE YoY/MoM, 근원 PCE
+    # YoY/MoM. 전부 "물가" 카테고리의 기존 SA 지수(US_CPI/US_CORE_CPI/US_PCE/US_CORE_PCE,
+    # CPIAUCSL 등 전부 계절조정)에서 yoy_percent()/mom_percent()로 파생하므로 새 데이터
+    # 소스가 필요 없다. ⚠️ MoM은 SA 필수, YoY는 SA/NSA 무관 — 4개 원천이 전부 이미 SA라
+    # 둘 다 같은 시리즈에서 뽑아도 원칙 위반이 아니다(SA를 NSA와 섞는 게 문제이지, SA를
+    # YoY에 쓰는 것 자체는 허용된다).
     "US": [
         {"key": "US_CPI_YOY", "label": "CPI 상승률 (전년동월대비 %)"},
+        {"key": "US_CPI_MOM", "label": "CPI 상승률 (전월대비 %)"},
+        {"key": "US_CORE_CPI_YOY", "label": "근원 CPI 상승률 (전년동월대비 %)"},
+        {"key": "US_CORE_CPI_MOM", "label": "근원 CPI 상승률 (전월대비 %)"},
+        {"key": "US_PCE_YOY", "label": "PCE 상승률 (전년동월대비 %)"},
+        {"key": "US_PCE_MOM", "label": "PCE 상승률 (전월대비 %)"},
+        {"key": "US_CORE_PCE_YOY", "label": "근원 PCE 상승률 (전년동월대비 %)"},
+        {"key": "US_CORE_PCE_MOM", "label": "근원 PCE 상승률 (전월대비 %)"},
+        {"key": "US_REAL_WAGE_YOY", "label": "실질임금 상승률 (전년동월대비 %)"},
         {"key": "US_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
         {"key": "US_M2_GDP", "label": "M2 / 명목GDP"},
     ],
@@ -35,9 +51,12 @@ COMPOSITE_INDICATORS = {
         # 쓰지만, FRED는 한국 국채 스프레드를 제공하지 않는다 — 그래서 기존
         # US_KR_RATE_SPREAD(한미 정책금리차)와 같은 "직접 빼는" 방식으로 계산한다. 토스
         # 국채 카탈로그(KR_BOND_2Y/3Y/10Y)를 재사용하므로 TOSS_CLIENT_ID가 필요하다(없으면
-        # MacroDataError가 그대로 노출됨 — 새 에러 처리 불필요).
-        {"key": "KR_YIELD_SPREAD_10Y2Y", "label": "국채 장단기 금리차 (10Y-2Y, 토스 일별)"},
-        {"key": "KR_YIELD_SPREAD_10Y3Y", "label": "국채 장단기 금리차 (10Y-3Y, 토스 일별)"},
+        # MacroDataError가 그대로 노출됨 — 새 에러 처리 불필요). ⚠️ 물가 재편 라운드에서
+        # 라벨의 ", 토스 일별" 표기를 뺐다 — 혼합 지표 버튼은 애초에 description/툴팁이 없어
+        # (기존 카탈로그 버튼과 다른 구조) 소스 표기를 옮길 곳이 없지만, "10Y-2Y"/"10Y-3Y"
+        # 자체가 이미 다른 항목과 헷갈릴 일이 없는 충분한 구분이라 소스 없이도 명확하다.
+        {"key": "KR_YIELD_SPREAD_10Y2Y", "label": "국채 장단기 금리차 (10Y-2Y)"},
+        {"key": "KR_YIELD_SPREAD_10Y3Y", "label": "국채 장단기 금리차 (10Y-3Y)"},
     ],
 }
 
@@ -47,8 +66,10 @@ CROSS_COUNTRY_INDICATORS = [
     # ⚠️ 국채 라운드(2026-08) — 위 정책금리차와는 다른 지표다. 정책금리는 중앙은행이
     # 결정하는 값(자주 안 바뀜)이고, 국채10년은 시장이 매일 새로 매기는 장기금리라 성격이
     # 다르다(예: 정책금리가 그대로여도 국채금리는 매일 움직인다). 둘 다 남겨 라벨로
-    # 구분한다 — 기존 정책금리차를 대체하지 않는다.
-    {"key": "US_KR_BOND10Y_SPREAD", "label": "한미 금리차 (국고채 10년, 토스 일별)"},
+    # 구분한다 — 기존 정책금리차를 대체하지 않는다. ⚠️ 물가 재편 라운드에서 ", 토스 일별"
+    # 표기를 뺐다 — "정책금리"/"국고채 10년"이라는 지표 종류 자체가 이미 두 항목을 구분하는
+    # 충분한 정보라 소스 표기 없이도 헷갈리지 않는다.
+    {"key": "US_KR_BOND10Y_SPREAD", "label": "한미 금리차 (국고채 10년)"},
 ]
 
 
@@ -119,6 +140,29 @@ def _cpi_yoy(country: str) -> pd.Series:
     if yoy.empty:
         raise MacroDataError(f"{country} CPI 상승률을 계산할 만큼 데이터가 충분하지 않습니다.")
     return yoy
+
+
+def _index_yoy(key: str, label: str | None = None) -> pd.Series:
+    """물가 재편 라운드(2026-08)에서 추가 — 임의의 지수 카탈로그 key를 전년동월대비 상승률(%)로
+    변환하는 범용 헬퍼다. _cpi_yoy가 "{country}_CPI" 패턴으로 하드코딩됐던 것과 달리, 근원
+    CPI·PCE·근원 PCE 등 어떤 지수 키에도 재사용한다(새 계산 로직 없이 yoy_percent() 재사용).
+    """
+    series = get_indicator_series(key)
+    yoy = yoy_percent(series)
+    if yoy.empty:
+        raise MacroDataError(f"{label or key} 상승률(YoY)을 계산할 만큼 데이터가 충분하지 않습니다.")
+    return yoy
+
+
+def _index_mom(key: str, label: str | None = None) -> pd.Series:
+    """_index_yoy와 짝을 이루는 전월대비(%) 버전 — mom_percent() 재사용. ⚠️ 호출부가 넘기는
+    key는 전부 "물가" 카테고리의 계절조정(SA) 지수(CPIAUCSL 등)라 MoM에 SA를 쓰라는 원칙을
+    만족한다(호출부에서 원계열을 넘기지 않도록 주의)."""
+    series = get_indicator_series(key)
+    mom = mom_percent(series)
+    if mom.empty:
+        raise MacroDataError(f"{label or key} 상승률(MoM)을 계산할 만큼 데이터가 충분하지 않습니다.")
+    return mom
 
 
 def _real_rate(country: str) -> pd.Series:
@@ -229,6 +273,16 @@ _COMPUTE = {
     "KR_YIELD_SPREAD_10Y2Y": lambda: _kr_yield_spread("KR_BOND_2Y"),
     "KR_YIELD_SPREAD_10Y3Y": lambda: _kr_yield_spread("KR_BOND_3Y"),
     "US_KR_BOND10Y_SPREAD": _rate_spread_bond10y,
+    # ⚠️ 물가 재편 라운드(2026-08) — 전부 "물가" 카테고리의 기존 SA 지수에서 파생(새 소스
+    # 없음). 근원 CPI MoM은 이 라운드의 "현재 문제" 1번으로 명시된 바로 그 빠진 지표다.
+    "US_CPI_MOM": lambda: _index_mom("US_CPI", "CPI"),
+    "US_CORE_CPI_YOY": lambda: _index_yoy("US_CORE_CPI", "근원 CPI"),
+    "US_CORE_CPI_MOM": lambda: _index_mom("US_CORE_CPI", "근원 CPI"),
+    "US_PCE_YOY": lambda: _index_yoy("US_PCE", "PCE"),
+    "US_PCE_MOM": lambda: _index_mom("US_PCE", "PCE"),
+    "US_CORE_PCE_YOY": lambda: _index_yoy("US_CORE_PCE", "근원 PCE"),
+    "US_CORE_PCE_MOM": lambda: _index_mom("US_CORE_PCE", "근원 PCE"),
+    "US_REAL_WAGE_YOY": lambda: _index_yoy("US_REAL_AVG_HOURLY_EARNINGS", "실질임금"),
 }
 
 

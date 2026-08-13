@@ -151,3 +151,58 @@ def test_kr_yield_spread_raises_macro_data_error_when_no_overlap():
     with patch("valley.composite.get_indicator_series", return_value=empty):
         with pytest.raises(MacroDataError):
             get_composite_series("KR_YIELD_SPREAD_10Y2Y")
+
+
+# ── 물가 재편 라운드(2026-08) — CPI/PCE YoY·MoM 파생지표 7종 + 실질임금 YoY ──────────────────
+
+
+def test_core_cpi_mom_uses_mom_percent_not_yoy():
+    """⚠️ 핵심 회귀 — 이 라운드가 명시적으로 지적한 빠진 지표(근원 CPI MoM)다. mom_percent()를
+    쓰지 yoy_percent()를 잘못 쓰지 않는지 값으로 구분해서 확인한다."""
+    idx = pd.date_range("2025-01-01", periods=13, freq="MS")
+    series = pd.Series([100 + i for i in range(13)], index=idx)  # 매월 +1
+
+    with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
+        result = get_composite_series("US_CORE_CPI_MOM")
+    mock_fn.assert_called_once_with("US_CORE_CPI")
+    # MoM(전월대비)이면 마지막 값(112 vs 111)의 변화율이지, YoY(전년동월비, 100 vs 112)가 아니다.
+    assert result.iloc[-1] == pytest.approx((112 / 111 - 1) * 100)
+    assert result.iloc[-1] != pytest.approx((112 / 100 - 1) * 100)  # YoY였다면 나올 값(오답 확인)
+
+
+def test_core_cpi_yoy_uses_yoy_percent():
+    idx = pd.date_range("2025-01-01", periods=13, freq="MS")
+    series = pd.Series([100 + i for i in range(13)], index=idx)
+
+    with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
+        result = get_composite_series("US_CORE_CPI_YOY")
+    mock_fn.assert_called_once_with("US_CORE_CPI")
+    assert result.iloc[-1] == pytest.approx(12.0)  # 100 -> 112, 12개월 전 대비 12%
+
+
+@pytest.mark.parametrize(
+    "key,expected_source",
+    [
+        ("US_PCE_YOY", "US_PCE"),
+        ("US_PCE_MOM", "US_PCE"),
+        ("US_CORE_PCE_YOY", "US_CORE_PCE"),
+        ("US_CORE_PCE_MOM", "US_CORE_PCE"),
+        ("US_REAL_WAGE_YOY", "US_REAL_AVG_HOURLY_EARNINGS"),
+    ],
+)
+def test_new_derived_indicators_read_correct_source_key(key, expected_source):
+    """새로 추가한 5개 파생지표가 각각 의도한 원천 카탈로그 key에서 읽는지 확인한다(엉뚱한
+    시리즈를 잘못 참조하는 복사-붙여넣기 실수를 잡기 위함)."""
+    idx = pd.date_range("2025-01-01", periods=13, freq="MS")
+    series = pd.Series([100 + i for i in range(13)], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
+        get_composite_series(key)
+    mock_fn.assert_called_once_with(expected_source)
+
+
+def test_us_cpi_mom_uses_headline_not_core():
+    idx = pd.date_range("2025-01-01", periods=13, freq="MS")
+    series = pd.Series([100 + i for i in range(13)], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
+        get_composite_series("US_CPI_MOM")
+    mock_fn.assert_called_once_with("US_CPI")

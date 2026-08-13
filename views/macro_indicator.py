@@ -46,7 +46,7 @@ MAX_BUTTONS_PER_ROW = 5
 
 # STEP 3 "CPI 구성항목 한눈에 보기" 비교표에 포함할 key 목록. ⚠️ 동일 조정(SA/NSA) 방식만
 # 묶는다 — 미국은 원계열(NSA)로 통일한 항목만, PCE 재화/서비스(계절조정)는 조정 방식이 달라
-# 이 비교표에서 제외한다(valley/macro.py의 "물가 세부" 카탈로그 주석 참고). 한국은 기존
+# 이 비교표에서 제외한다(valley/macro.py의 "물가 구성" 카탈로그 주석 참고). 한국은 기존
 # KR_CPI(원계열)와 새 구성항목이 원래 같은 조정 방식이라 그대로 묶는다.
 CPI_COMPARISON_KEYS = {
     "US": [
@@ -258,16 +258,32 @@ def _load_composite_series(key: str):
     return get_composite_series(key)
 
 
-composite_cols = st.columns(len(COMPOSITE_INDICATORS[country_code]))
-for col, indicator in zip(composite_cols, COMPOSITE_INDICATORS[country_code]):
-    if col.button(indicator["label"], key=f"btn_composite_{indicator['key']}", width="stretch"):
-        st.session_state.macro_composite_selected = indicator["key"]
+def _render_composite_buttons(indicators: list[dict]) -> None:
+    """혼합지표 버튼을 _balanced_row_sizes로 줄바꿈해 그린다.
+
+    ⚠️ 물가 재편 라운드(2026-08) — 이전엔 st.columns(len(indicators))로 항목 수만큼 열을
+    만들었는데, 이번 라운드에서 미국 혼합지표가 3개→11개로 늘어(CPI/PCE YoY·MoM 파생지표
+    추가) 한 줄에 11칸이 되면 버튼 글자가 다 안 보일 정도로 좁아진다 — 위 개별 지표
+    버튼(_render_indicator_buttons)이 이미 쓰는 _balanced_row_sizes를 재사용해 여러 줄로
+    감싼다. ⚠️ 디자인 변경이 아니라 줄바꿈만 고치는 것이라, 강조 표시(type="primary")나
+    rerun 같은 개별 지표 버튼의 다른 동작은 가져오지 않았다(기존 혼합지표 버튼의 시각적
+    동작을 그대로 유지).
+    """
+    row_sizes = _balanced_row_sizes(len(indicators))
+    idx = 0
+    for row_size in row_sizes:
+        chunk = indicators[idx : idx + row_size]
+        idx += row_size
+        cols = st.columns(row_size)
+        for col, indicator in zip(cols, chunk):
+            if col.button(indicator["label"], key=f"btn_composite_{indicator['key']}", width="stretch"):
+                st.session_state.macro_composite_selected = indicator["key"]
+
+
+_render_composite_buttons(COMPOSITE_INDICATORS[country_code])
 
 st.caption("교차국가")
-cross_cols = st.columns(len(CROSS_COUNTRY_INDICATORS))
-for col, indicator in zip(cross_cols, CROSS_COUNTRY_INDICATORS):
-    if col.button(indicator["label"], key=f"btn_composite_{indicator['key']}", width="stretch"):
-        st.session_state.macro_composite_selected = indicator["key"]
+_render_composite_buttons(CROSS_COUNTRY_INDICATORS)
 
 composite_selected_key = st.session_state.get("macro_composite_selected")
 if not composite_selected_key:
@@ -689,7 +705,7 @@ else:
     st.caption(
         "미국은 원계열(NSA) 기준으로 통일했습니다 — 전년동월대비 비교는 계절성이 12개월 차분에서 "
         "상쇄되는 원계열이 표준적입니다. (PCE 재화/서비스 물가지수는 계절조정(SA) 기준이라 이 "
-        "비교표에는 포함하지 않았습니다 — 위 '물가 세부'에서 개별로 볼 수 있습니다.)"
+        "비교표에는 포함하지 않았습니다 — 위 '물가 구성'에서 개별로 볼 수 있습니다.)"
         if is_us
         else "한국 CPI는 원래 원계열 기준으로 발표되어 총지수·구성항목이 모두 같은 기준입니다."
     )

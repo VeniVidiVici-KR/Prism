@@ -50,7 +50,7 @@ US_CPI_COMPONENT_BLS_IDS = {
 # 그대로 써서(예: "US_CPI_FOOD"), 그 카테고리의 계절조정(SA) 버전 INDICATORS 카탈로그 key로
 # 연결한다. ⚠️ 가중치(상대중요도)는 계절조정 여부와 무관한 "카테고리" 속성이라, MoM 뷰도
 # US_CPI_COMPONENT_BLS_IDS를 통해 얻은 동일 가중치를 그대로 재사용한다(새로 조회하지 않음) —
-# 값(가격지수)만 SA로 바꿔 쓴다. "물가 세부" 카탈로그의 SA 항목 주석 참고.
+# 값(가격지수)만 SA로 바꿔 쓴다. "물가 구성" 카탈로그의 SA 항목 주석 참고.
 US_CPI_COMPONENT_SA_KEYS = {
     "US_CPI_FOOD": "US_CPI_FOOD_SA",
     "US_CPI_ENERGY": "US_CPI_ENERGY_SA",
@@ -61,7 +61,7 @@ US_CPI_COMPONENT_SA_KEYS = {
 # 한국: ECOS StatisticItemList가 901Y009(소비자물가지수)의 지출목적별 12개 대분류(A~L)
 # 가중치(WEIGHT 필드)를 실측으로 직접 제공한다(실측: item_code "0"의 WEIGHT="1000" — 1000분비
 # 기준, 12개 대분류 WEIGHT 합계 = 1000.0 정확히 일치 확인). K01(외식)은 K(음식·숙박)의 하위
-# 중분류라 이 배타적 집합에서 제외한다(기존 "물가 세부" 카탈로그엔 그대로 남겨둠).
+# 중분류라 이 배타적 집합에서 제외한다(기존 "물가 구성" 카탈로그엔 그대로 남겨둠).
 KR_CPI_MAJOR_ITEM_CODES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
 
 
@@ -78,33 +78,39 @@ class MacroDataError(Exception):
 # 항목은 label 자체로 충분히 짧고 명확하다고 판단해 그대로 뒀다.
 INDICATORS = {
     "US": {
+        # ⚠️ 물가 재편 라운드(2026-08) — 기존 "물가/물가 세부/기저 인플레" 3분류를 "무엇을 알고
+        # 싶은가" 기준으로 재편했다(데이터 출처·방법론 기준이 아님). 근거:
+        # - "물가": 헤드라인 수준 — 지금 물가가 몇 %인가. CPI·근원CPI·PCE·근원PCE 4개만
+        #   남기고 PPI는 아래 "물가 파급"으로 옮겼다(PPI는 헤드라인 물가 그 자체가 아니라
+        #   물가에 앞서/뒤이어 움직이는 연관 지표라는 성격이 더 강하다).
+        # - "물가 구성"(기존 "물가 세부"에서 개명): 구성 분해 — 무엇이 물가를 움직였나.
+        #   원계열·계절조정 구성항목이 전부 여기 모인다.
+        # - "기저 인플레": 기저 추세 — 극단값을 걸러낸 추세는 어떤가. 기존 그대로 유지(이미
+        #   목적 기준 이름이라 재개명하지 않음).
+        # - "물가 파급"(신설): 물가 파급 — 생산자물가·임금 등 연관 지표. PPI + 신규 실질임금.
+        # ⚠️ key는 전부 그대로 유지했다 — composite.py·비교뷰·오버레이·테스트가 key로만
+        # 참조하므로 카테고리 이동은 이들과 완전히 무관하다(라벨/카테고리는 순수 UI 배치).
         "물가": [
             {"key": "US_CPI", "label": "CPI (소비자물가지수)", "fred_id": "CPIAUCSL"},
             {"key": "US_CORE_CPI", "label": "근원 CPI", "fred_id": "CPILFESL"},
             {"key": "US_PCE", "label": "PCE (개인소비지출물가)", "fred_id": "PCEPI"},
             {"key": "US_CORE_PCE", "label": "근원 PCE", "fred_id": "PCEPILFE"},
-            {"key": "US_PPI", "label": "생산자물가지수(PPI)", "fred_id": "PPIACO"},
         ],
-        # ⚠️ SA/NSA 통일 원칙(실측 후 결정, 자세한 근거는 valley/macro.py 상단 대신 여기 남김):
-        # CPI 구성항목은 전부 원계열(NSA)로 통일했다. STEP 3의 "구성항목 한눈에 보기"가
-        # 전년동월대비(YoY)% 비교인데, 12개월 차분에서 계절성이 상쇄되는 NSA가 YoY 비교의
-        # 표준 관행이고(SA/NSA를 한 비교에 섞으면 예전 PER TTM/FY 혼재와 같은 문제가 난다),
-        # 실측 결과 BLS/FRED가 CPI 구성항목 전부에 대해 "CUUR"(원계열) 계열을 안정적으로
-        # 제공한다(CUSR=계절조정 대응 계열도 있지만 이번엔 안 씀). 위 "물가"의 기존
-        # US_CPI(CPIAUCSL, SA)는 그대로 두되, 구성항목과 나란히 비교할 수 있도록 원계열
-        # 헤드라인(US_CPI_NSA)을 이 카테고리에 별도로 추가했다 — 기존 지표는 손대지 않음.
-        # PCE 재화/서비스는 원계열(NSA) 버전을 FRED에서 찾지 못해(실측 시도 결과 확인 불가),
-        # 기존 PCE 헤드라인/근원(PCEPI/PCEPILFE)과 같은 계절조정(SA) 기준으로 통일해 그
-        # 계열 안에서만 일관되게 뒀다 — CPI 원계열 그룹과는 섞이지 않도록 라벨에 각각
-        # "(원계열)"/"(계절조정)"을 명시했고, STEP 3 비교표는 CPI 원계열 항목만 묶는다.
-        "물가 세부": [
+        # ⚠️ SA/NSA 통일 원칙(실측 후 결정): CPI 구성항목은 전부 원계열(NSA)로 통일했다 —
+        # "CPI 구성항목 한눈에 보기"가 전년동월대비(YoY)% 비교인데, 12개월 차분에서
+        # 계절성이 상쇄되는 NSA가 YoY 비교의 표준 관행이다(SA/NSA를 한 비교에 섞으면 예전
+        # PER TTM/FY 혼재와 같은 문제가 난다). PCE 재화/서비스는 원계열(NSA) 버전을 FRED에서
+        # 찾지 못해(실측 시도 결과 확인 불가) 기존 PCE 헤드라인/근원과 같은 계절조정(SA)
+        # 기준으로 통일했다 — CPI 원계열 그룹과는 섞이지 않도록 description에 조정 방식을
+        # 명시했고, 비교표는 CPI 원계열 항목만 묶는다.
+        "물가 구성": [
             {
-                "key": "US_CPI_NSA", "label": "CPI 총지수(원계열)", "fred_id": "CPIAUCNS",
-                "description": "원계열(NSA) · 구성항목 비교의 기준 시리즈",
+                "key": "US_CPI_NSA", "label": "CPI 총지수", "fred_id": "CPIAUCNS",
+                "description": "원계열(NSA) 기준 — 아래 구성항목들과 같은 조정 방식이라 비교의 기준 시리즈로 쓴다",
             },
             {
                 "key": "US_CPI_SHELTER", "label": "주거비", "fred_id": "CUUR0000SAH1",
-                "description": "원계열(NSA) · 근원서비스의 하위 항목(배타적 4분할에는 미포함)",
+                "description": "원계열(NSA) · 근원서비스의 하위 항목",
             },
             {"key": "US_CPI_FOOD", "label": "식품", "fred_id": "CPIUFDNS", "description": "원계열(NSA)"},
             {"key": "US_CPI_ENERGY", "label": "에너지", "fred_id": "CPIENGNS", "description": "원계열(NSA)"},
@@ -118,20 +124,19 @@ INDICATORS = {
             },
             {
                 "key": "US_PCE_GOODS", "label": "PCE 재화", "fred_id": "DGDSRG3M086SBEA",
-                "description": "PCE 재화 물가지수 · 계절조정(SA)",
+                "description": "계절조정(SA) — 위 CPI 원계열 항목과 조정 방식이 달라 직접 비교하지 않는다",
             },
             {
                 "key": "US_PCE_SERVICES", "label": "PCE 서비스", "fred_id": "DSERRG3M086SBEA",
-                "description": "PCE 서비스 물가지수 · 계절조정(SA)",
+                "description": "계절조정(SA) — 위 CPI 원계열 항목과 조정 방식이 달라 직접 비교하지 않는다",
             },
-            # ⚠️ MoM(전월비) 기여도 분해 전용 — 위 4개 원계열(NSA)과는 다른 계열이다. MoM은
-            # 계절성(여름 전기요금 등)에 크게 좌우돼 NSA로 보면 "이번 달 특이사항"과 매년
-            # 반복되는 계절 패턴이 구분되지 않는다 — 그래서 MoM 뷰에서만 SA를 쓴다(YoY 뷰는
-            # 12개월 차분에서 계절성이 상쇄되므로 그대로 NSA 유지, 위 물가 세부 주석 참고).
-            # 실측(2026-08 라운드, 최신 2026-06) 결과 FRED에 4분할 전부 SA 버전이 존재함을
-            # 확인했다 — 헤드라인 SA는 이미 "물가" 카테고리의 US_CPI(CPIAUCSL)로 등록돼 있어
-            # 별도 추가하지 않는다. ⚠️ 이 4개는 위 원계열 4개와 절대 같은 화면에서 섞지 않는다
-            # (views/macro_indicator.py의 US_CPI_COMPONENT_SA_KEYS 매핑·MoM 뷰 참고).
+            # ⚠️ MoM(전월비) 기여도 분해 전용 — 위 원계열 4개와는 다른 계열이다. MoM은 계절성
+            # (여름 전기요금 등)에 크게 좌우돼 NSA로 보면 "이번 달 특이사항"과 매년 반복되는
+            # 계절 패턴이 구분되지 않아, MoM 뷰에서만 SA를 쓴다(YoY는 12개월 차분에서
+            # 계절성이 상쇄되므로 원계열 유지). ⚠️ 이 4개와 위 원계열 4개는 라벨이 겹치므로
+            # "(계절조정)" 구분을 남겼다 — 이건 소스 표기가 아니라 같은 카테고리 안에서
+            # 실제로 구분이 필요한 경우다. 절대 같은 화면에서 섞지 않는다(views/
+            # macro_indicator.py의 US_CPI_COMPONENT_SA_KEYS 매핑·MoM 뷰 참고).
             {
                 "key": "US_CPI_FOOD_SA", "label": "식품 (계절조정)", "fred_id": "CPIUFDSL",
                 "description": "계절조정(SA) · MoM 기여도 분해 전용 — YoY 비교는 위 원계열 '식품'을 쓴다",
@@ -147,6 +152,103 @@ INDICATORS = {
             {
                 "key": "US_CPI_CORE_SERVICES_SA", "label": "근원 서비스 (계절조정)", "fred_id": "CUSR0000SASLE",
                 "description": "에너지서비스 제외 · 계절조정(SA) · MoM 기여도 분해 전용",
+            },
+        ],
+        # ⚠️ "기저 인플레(underlying inflation)" — 근원(core)이 식품·에너지를 "범주째" 빼는 것과
+        # 달리, 이 계열들은 매달 극단적으로 오르내린 "품목"을 통계적으로 잘라내거나(trimmed
+        # mean) 중앙값만 취해(median) 일시적 충격에 덜 휘둘리는 물가 추세를 본다. 실측(2026-08
+        # 라운드, 최신 2026-06) 결과 보고:
+        #
+        # 1) 댈러스 연준 Trimmed Mean PCE — 후보 "PCETRIM12M159SFRCA"는 실측 결과 404(존재하지
+        #    않는 ID, 오타로 추정)라 제외했다. 실제 존재하는 정확한 ID는
+        #    PCETRIM12M159SFRBDAL(12개월, "Percent Change from Year Ago")과
+        #    PCETRIM1M158SFRBDAL(1개월 연율, "Percent Change at Annual Rate")이다. 둘 다 FRED
+        #    시리즈 페이지의 "Units:" 메타데이터를 실측 대조해 확인(추정 아님) — 이미 변화율
+        #    (%)로 제공되는 계열이라 yoy_percent()를 적용하면 "변화율의 변화율"이 되어 틀린다.
+        #    둘 다 계절조정(SA). 최신값(2026-06): 12개월 2.23%, 1개월 연율 1.44% — 서로 다른
+        #    시계(smoothing)라 성격이 다르다(1개월 연율이 훨씬 변동성 큼: 2.94→2.53→2.66→1.44).
+        #    시장은 발표일에 1개월 연율(빠른 신호)을, 추세 판단에는 12개월(완만한 신호)을 함께
+        #    쓰므로 － 이 앱이 헤드라인 CPI에도 YoY/MoM 두 시계를 모두 노출하는 것과 같은
+        #    논리로 － 둘 다 등록한다(단, 절대 같은 차트/표에 섞지 않는다).
+        #
+        # 2) 클리블랜드 연준 Median CPI / 16% Trimmed-Mean CPI — 후보 ID(*158*)는 실측 결과
+        #    "Percent Change at Annual Rate"(1개월 연율)로 확인됐고, 사전에 없는지 걱정했던
+        #    12개월 버전도 실측으로 실제 존재함을 확인했다(*159* 접미사,
+        #    "Percent Change from Year Ago") — MEDCPIM159SFRBCLE·TRMMEANCPIM159SFRBCLE. 전부
+        #    계절조정(SA), 전부 이미 변화율(%)로 제공(지수 아님). 최신값(2026-06): 중위 CPI
+        #    12개월 2.71%(1개월 연율 2.11%), 절사평균 CPI 12개월 2.63%(1개월 연율 0.13% —
+        #    1개월 연율의 변동성이 12개월판보다 훨씬 큼을 그대로 보여주는 사례).
+        #
+        # 3) 상식성 대조: 기존 근원 CPI YoY(대략 2~3%대), 근원 PCE YoY(대략 2~3%대)와 나란히
+        #    놓으면 이 6개 시리즈의 12개월판(2.2~2.7%대)이 거의 같은 범위에 들어온다 — 단위·
+        #    계열을 잘못 집었을 때 나타나는 큰 이탈(예: 10배 차이나 마이너스 부호 반전)이 없다.
+        #    자세한 비교는 아래 macro_indicator.py의 "기저 인플레 비교" 섹션 참고.
+        #
+        # ⚠️ 카테고리 배치: "물가 구성"(이미 11개 항목)에 얹으면 과밀해지고, 이 계열들은
+        # "구성항목의 하위 분해"가 아니라 "물가 전체를 다른 방법론으로 재는 대안 지표"라는
+        # 점에서 성격이 달라 별도 "기저 인플레" 카테고리를 유지한다(기저 추세 — 극단값을
+        # 걸러낸 추세는 어떤가, 라는 이미 목적 기준의 이름이라 재개명하지 않았다). ⚠️ 물가
+        # 재편 라운드에서 이 카테고리를 "물가"·"물가 구성" 바로 다음(금리·위험지표·신용시장
+        # 앞)으로 옮겼다 — 4개 물가 카테고리가 화면에서 서로 떨어져 있으면 "무엇을 알고
+        # 싶은가" 기준의 위계가 한눈에 안 들어오기 때문이다(재배치일 뿐 항목 변경은 없음).
+        "기저 인플레": [
+            {
+                "key": "US_TRIMMED_MEAN_PCE_12M", "label": "절사평균 PCE (12개월)",
+                "fred_id": "PCETRIM12M159SFRBDAL",
+                "description": "댈러스 연준 절사평균 PCE의 전년동월대비 상승률(%, 계절조정) — 이미 변화율로 제공되는 값입니다.",
+            },
+            {
+                "key": "US_TRIMMED_MEAN_PCE_1M", "label": "절사평균 PCE (1개월연율)",
+                "fred_id": "PCETRIM1M158SFRBDAL",
+                "description": (
+                    "댈러스 연준 절사평균 PCE의 전월비 연율화 상승률(%, 계절조정) — 변동성이 커서 "
+                    "12개월판과 같은 화면에서 비교하지 않습니다."
+                ),
+            },
+            {
+                "key": "US_MEDIAN_CPI_12M", "label": "중위 CPI (12개월)", "fred_id": "MEDCPIM159SFRBCLE",
+                "description": "클리블랜드 연준 중위 CPI의 전년동월대비 상승률(%, 계절조정) — 이미 변화율로 제공되는 값입니다.",
+            },
+            {
+                "key": "US_MEDIAN_CPI_1M", "label": "중위 CPI (1개월연율)", "fred_id": "MEDCPIM158SFRBCLE",
+                "description": (
+                    "클리블랜드 연준 중위 CPI의 전월비 연율화 상승률(%, 계절조정) — 변동성이 커서 "
+                    "12개월판과 같은 화면에서 비교하지 않습니다."
+                ),
+            },
+            {
+                "key": "US_TRIMMED_MEAN_CPI_12M", "label": "절사평균 CPI (12개월)",
+                "fred_id": "TRMMEANCPIM159SFRBCLE",
+                "description": "클리블랜드 연준 16% 절사평균 CPI의 전년동월대비 상승률(%, 계절조정) — 이미 변화율로 제공되는 값입니다.",
+            },
+            {
+                "key": "US_TRIMMED_MEAN_CPI_1M", "label": "절사평균 CPI (1개월연율)",
+                "fred_id": "TRMMEANCPIM158SFRBCLE",
+                "description": (
+                    "클리블랜드 연준 16% 절사평균 CPI의 전월비 연율화 상승률(%, 계절조정) — 변동성이 커서 "
+                    "12개월판과 같은 화면에서 비교하지 않습니다."
+                ),
+            },
+        ],
+        # ⚠️ 물가 재편 라운드(2026-08) 신설 — 물가 파급: 생산자물가·임금 등 연관 지표. PPI는
+        # 기존 "물가"에서 옮겨왔다(헤드라인 물가 자체가 아니라 앞뒤로 연관된 지표라서).
+        # 실질임금은 새로 추가 — FRED에는 없어(실측: CES0500000032/CES0500000013 둘 다 404)
+        # BLS API로 직접 조회한다(get_bls_series, valley/macro.py 상단 주석 참고).
+        # CES0500000013("all employees", 1982-84달러, SA)을 선택한 이유는 기존 명목
+        # 임금(US_AVG_HOURLY_EARNINGS, CES0500000003)과 같은 "전체 근로자" 인구라 실질/명목
+        # 짝이 정확히 맞기 때문이다(CES0500000032는 "생산·비관리직" 인구라 다른 짝이 됨,
+        # 실측 대조로 확인). 실측 최신값(2026-07): 실질임금 YoY -0.09% — 명목임금 YoY(3.15%)
+        # - CPI YoY(3.54%) 근사치(-0.39%)와 부호·규모가 비슷해 상식적이다(정확히 같지는
+        # 않다 — 근사식은 곱셈 항을 무시한 선형 근사라 실측값과 소폭 차이가 나는 게 정상).
+        "물가 파급": [
+            {"key": "US_PPI", "label": "생산자물가지수(PPI)", "fred_id": "PPIACO"},
+            {
+                "key": "US_REAL_AVG_HOURLY_EARNINGS", "label": "실질 평균 시간당 임금",
+                "bls_id": "CES0500000013",
+                "description": (
+                    "BLS 직접 조회(FRED 미제공) · 1982-84년 달러 기준, 계절조정 — 명목판(고용 세부의 "
+                    "평균 시간당 임금)과 같은 '전체 근로자' 인구 기준이라 실질/명목을 나란히 비교할 수 있습니다."
+                ),
             },
         ],
         "금리": [
@@ -204,78 +306,6 @@ INDICATORS = {
             {
                 "key": "US_IG_SPREAD_BBB", "label": "BBB 등급 스프레드", "fred_id": "BAMLC0A4CBBB",
                 "description": "ICE BofA BBB US Corporate OAS · 투자등급 최하단, 차입 의존 기업대",
-            },
-        ],
-        # ⚠️ "기저 인플레(underlying inflation)" — 근원(core)이 식품·에너지를 "범주째" 빼는 것과
-        # 달리, 이 계열들은 매달 극단적으로 오르내린 "품목"을 통계적으로 잘라내거나(trimmed
-        # mean) 중앙값만 취해(median) 일시적 충격에 덜 휘둘리는 물가 추세를 본다. 실측(2026-08
-        # 라운드, 최신 2026-06) 결과 보고:
-        #
-        # 1) 댈러스 연준 Trimmed Mean PCE — 후보 "PCETRIM12M159SFRCA"는 실측 결과 404(존재하지
-        #    않는 ID, 오타로 추정)라 제외했다. 실제 존재하는 정확한 ID는
-        #    PCETRIM12M159SFRBDAL(12개월, "Percent Change from Year Ago")과
-        #    PCETRIM1M158SFRBDAL(1개월 연율, "Percent Change at Annual Rate")이다. 둘 다 FRED
-        #    시리즈 페이지의 "Units:" 메타데이터를 실측 대조해 확인(추정 아님) — 이미 변화율
-        #    (%)로 제공되는 계열이라 yoy_percent()를 적용하면 "변화율의 변화율"이 되어 틀린다.
-        #    둘 다 계절조정(SA). 최신값(2026-06): 12개월 2.23%, 1개월 연율 1.44% — 서로 다른
-        #    시계(smoothing)라 성격이 다르다(1개월 연율이 훨씬 변동성 큼: 2.94→2.53→2.66→1.44).
-        #    시장은 발표일에 1개월 연율(빠른 신호)을, 추세 판단에는 12개월(완만한 신호)을 함께
-        #    쓰므로 － 이 앱이 헤드라인 CPI에도 YoY/MoM 두 시계를 모두 노출하는 것과 같은
-        #    논리로 － 둘 다 등록한다(단, 절대 같은 차트/표에 섞지 않는다).
-        #
-        # 2) 클리블랜드 연준 Median CPI / 16% Trimmed-Mean CPI — 후보 ID(*158*)는 실측 결과
-        #    "Percent Change at Annual Rate"(1개월 연율)로 확인됐고, 사전에 없는지 걱정했던
-        #    12개월 버전도 실측으로 실제 존재함을 확인했다(*159* 접미사,
-        #    "Percent Change from Year Ago") — MEDCPIM159SFRBCLE·TRMMEANCPIM159SFRBCLE. 전부
-        #    계절조정(SA), 전부 이미 변화율(%)로 제공(지수 아님). 최신값(2026-06): 중위 CPI
-        #    12개월 2.71%(1개월 연율 2.11%), 절사평균 CPI 12개월 2.63%(1개월 연율 0.13% —
-        #    1개월 연율의 변동성이 12개월판보다 훨씬 큼을 그대로 보여주는 사례).
-        #
-        # 3) 상식성 대조: 기존 근원 CPI YoY(대략 2~3%대), 근원 PCE YoY(대략 2~3%대)와 나란히
-        #    놓으면 이 6개 시리즈의 12개월판(2.2~2.7%대)이 거의 같은 범위에 들어온다 — 단위·
-        #    계열을 잘못 집었을 때 나타나는 큰 이탈(예: 10배 차이나 마이너스 부호 반전)이 없다.
-        #    자세한 비교는 아래 macro_indicator.py의 "기저 인플레 비교" 섹션 참고.
-        #
-        # ⚠️ 카테고리 배치: "물가 세부"(이미 12개 항목)에 얹으면 과밀해지고, 이 계열들은
-        # "구성항목의 하위 분해"가 아니라 "물가 전체를 다른 방법론으로 재는 대안 지표"라는
-        # 점에서 성격이 달라 별도 "기저 인플레" 카테고리로 신설한다.
-        "기저 인플레": [
-            {
-                "key": "US_TRIMMED_MEAN_PCE_12M", "label": "절사평균 PCE (12개월)",
-                "fred_id": "PCETRIM12M159SFRBDAL",
-                "description": "댈러스 연준 Trimmed Mean PCE · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
-            },
-            {
-                "key": "US_TRIMMED_MEAN_PCE_1M", "label": "절사평균 PCE (1개월연율)",
-                "fred_id": "PCETRIM1M158SFRBDAL",
-                "description": (
-                    "댈러스 연준 Trimmed Mean PCE · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
-                    "12개월판과 같은 차트에서 비교하지 말 것"
-                ),
-            },
-            {
-                "key": "US_MEDIAN_CPI_12M", "label": "중위 CPI (12개월)", "fred_id": "MEDCPIM159SFRBCLE",
-                "description": "클리블랜드 연준 Median CPI · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
-            },
-            {
-                "key": "US_MEDIAN_CPI_1M", "label": "중위 CPI (1개월연율)", "fred_id": "MEDCPIM158SFRBCLE",
-                "description": (
-                    "클리블랜드 연준 Median CPI · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
-                    "12개월판과 같은 차트에서 비교하지 말 것"
-                ),
-            },
-            {
-                "key": "US_TRIMMED_MEAN_CPI_12M", "label": "절사평균 CPI (12개월)",
-                "fred_id": "TRMMEANCPIM159SFRBCLE",
-                "description": "클리블랜드 연준 16% Trimmed-Mean CPI · 전년동월대비(%) · 계절조정(SA) · 이미 변화율(지수 아님)",
-            },
-            {
-                "key": "US_TRIMMED_MEAN_CPI_1M", "label": "절사평균 CPI (1개월연율)",
-                "fred_id": "TRMMEANCPIM158SFRBCLE",
-                "description": (
-                    "클리블랜드 연준 16% Trimmed-Mean CPI · 전월비 연율화(%) · 계절조정(SA) · 변동성 큼 · "
-                    "12개월판과 같은 차트에서 비교하지 말 것"
-                ),
             },
         ],
         "고용": [
@@ -483,7 +513,12 @@ INDICATORS = {
         # 체계) 위 미국 CPI 구성항목(NSA로 통일)과 조정 방식 문제 없이 나란히 비교 가능하다.
         # ⚠️ ECOS 전용(FRED 대응 시리즈 없음) — ECOS_API_KEY 없으면 명확히 실패한다(경상수지/
         # 가계신용과 동일 패턴, get_indicator_series가 자동으로 MacroDataError를 던짐).
-        "물가 세부": [
+        # ⚠️ 물가 재편 라운드(2026-08) — 미국과 같은 "무엇을 알고 싶은가" 기준으로 "물가 세부"를
+        # "물가 구성"으로 개명했다(구성 분해 — 무엇이 물가를 움직였나). 한국은 항목이 적어
+        # "기저 인플레"(절사평균·중위 계열이 한국엔 없음)·"물가 파급"(PPI·실질임금 등 한국
+        # 카탈로그엔 없음) 카테고리는 만들지 않았다 — 비어있는 카테고리를 만들지 말라는
+        # 지시에 따름.
+        "물가 구성": [
             {
                 "key": "KR_CPI_FOOD",
                 "label": "식료품",
@@ -513,8 +548,7 @@ INDICATORS = {
         # (KR_BOND_2Y~30Y, 실측 확인)을 일별 금리로 추가했다. 기존 KR_DGS10(FRED, 월별)은
         # 절대 삭제하지 않았다 — (1) FRED가 훨씬 긴 장기 시계열을 갖고 있고(토스 candles는
         # 실측 확인 결과 2021년 하반기까지만 소급 가능), (2) TOSS_CLIENT_ID/SECRET이 없는
-        # 사용자에게는 이게 유일한 한국 금리 소스다. 라벨에 "(일별, 토스)"/"(월별·장기,
-        # FRED)"를 명시해 절대 혼동하지 않게 했다. ⚠️ 단위 실측: 토스 lastPrice/closePrice는
+        # 사용자에게는 이게 유일한 한국 금리 소스다. ⚠️ 단위 실측: 토스 lastPrice/closePrice는
         # 이미 퍼센트(%) 값 그대로 온다(예: "4.295"=4.295%, 소수·bp 아님) — FRED
         # IRLTLT01KRM156N 최신월(2026-06, 4.181%)과 교차검증한 결과 토스 최신값(2026-08-12,
         # 4.295%)의 차이가 0.11%p로, 두 달 사이 금리가 완만히 오른 추세(3.485→4.181%)를
@@ -522,38 +556,43 @@ INDICATORS = {
         # 항목은 기존 ECOS 전용 지표(예: KR_CURRENT_ACCOUNT)와 동일한 패턴으로 버튼 클릭 시
         # MacroDataError를 그대로 노출한다(별도 UI 분기 불필요 — get_indicator_series의
         # toss_bond 디스패치가 TossDataError를 MacroDataError로 변환).
+        # ⚠️ 물가 재편 라운드(2026-08) — 라벨에서 출처("FRED"/"토스") 표기를 뺐다(전문
+        # 대시보드는 내부 소스를 라벨에 적지 않는다, description으로 옮김). 단 10년물은
+        # KR_DGS10과 KR_BOND_10Y 둘 다 "국고채 10년"으로 부르면 두 버튼을 구분할 수 없어
+        # 유일하게 (월별)/(일별) 구분을 남겼다 — 2Y/3Y/5Y/20Y/30Y는 겹치는 다른 항목이 없어
+        # 완전히 clean한 라벨로 뺐다.
         "금리": [
             {"key": "KR_BASE_RATE", "label": "한국은행 기준금리", "fred_id": "IRSTCI01KRM156N"},
             {
-                "key": "KR_DGS10", "label": "국고채 10년 (월별·장기, FRED)", "fred_id": "IRLTLT01KRM156N",
-                "description": "FRED 미러링 · 월별 · 장기 시계열 · 토스 키 없이도 조회 가능",
+                "key": "KR_DGS10", "label": "국고채 10년 (월별)", "fred_id": "IRLTLT01KRM156N",
+                "description": "FRED 미러링 · 장기 시계열(가장 긴 소급) · 토스 키 없이도 조회 가능",
             },
             {
-                "key": "KR_BOND_2Y", "label": "국고채 2년 (일별, 토스)", "toss_bond": "KR_BOND_2Y",
-                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+                "key": "KR_BOND_2Y", "label": "국고채 2년", "toss_bond": "KR_BOND_2Y",
+                "description": "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
             },
             {
-                "key": "KR_BOND_3Y", "label": "국고채 3년 (일별, 토스)", "toss_bond": "KR_BOND_3Y",
-                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+                "key": "KR_BOND_3Y", "label": "국고채 3년", "toss_bond": "KR_BOND_3Y",
+                "description": "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
             },
             {
-                "key": "KR_BOND_5Y", "label": "국고채 5년 (일별, 토스)", "toss_bond": "KR_BOND_5Y",
-                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+                "key": "KR_BOND_5Y", "label": "국고채 5년", "toss_bond": "KR_BOND_5Y",
+                "description": "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
             },
             {
-                "key": "KR_BOND_10Y", "label": "국고채 10년 (일별, 토스)", "toss_bond": "KR_BOND_10Y",
+                "key": "KR_BOND_10Y", "label": "국고채 10년 (일별)", "toss_bond": "KR_BOND_10Y",
                 "description": (
-                    "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요 · "
-                    "FRED 월별판(KR_DGS10)과 실측 대조 결과 0.11%p 차이(상승 추세 감안 시 상식적)"
+                    "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요 · "
+                    "월별판(위 국고채 10년)과 실측 대조 결과 0.11%p 차이(상승 추세 감안 시 상식적)"
                 ),
             },
             {
-                "key": "KR_BOND_20Y", "label": "국고채 20년 (일별, 토스)", "toss_bond": "KR_BOND_20Y",
-                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+                "key": "KR_BOND_20Y", "label": "국고채 20년", "toss_bond": "KR_BOND_20Y",
+                "description": "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
             },
             {
-                "key": "KR_BOND_30Y", "label": "국고채 30년 (일별, 토스)", "toss_bond": "KR_BOND_30Y",
-                "description": "토스증권 Open API · 일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
+                "key": "KR_BOND_30Y", "label": "국고채 30년", "toss_bond": "KR_BOND_30Y",
+                "description": "일별 종가(%) · 2021년 하반기부터 · TOSS_CLIENT_ID 필요",
             },
         ],
         # ⚠️ KOFIA(금융투자협회) 신용공여 라운드 — 코스피/코스닥 신용융자 잔고는 두 경로로
@@ -854,6 +893,75 @@ def get_bls_relative_importance(bls_series_id: str) -> tuple[float, str]:
     )
 
 
+def get_bls_series(bls_series_id: str, years: int = 20) -> pd.Series:
+    """BLS 공식 API에서 시계열 원본을 직접 가져온다 — get_bls_relative_importance와 같은 인증
+    경로를 재사용하되, aspect 메타데이터가 아니라 데이터 포인트 자체(월별 값)를 반환한다.
+
+    ⚠️ 실측 확인(2026-08 물가 재편 라운드): 실질 평균시간당임금을 FRED에서 찾다가(추측 없이
+    실측) CES0500000032(생산·비관리직 인구 기준)는 FRED에 없고(404) BLS API에는 있음을
+    발견했는데, 이 인구 기준이 기존 카탈로그의 명목 임금(US_AVG_HOURLY_EARNINGS,
+    CES0500000003, "전체 근로자" 인구)과 다르다는 것도 함께 확인했다. 짝을 맞추려고 같은
+    "전체 근로자" 인구의 실질판을 BLS API로 직접 대조 탐색해 CES0500000013("Average hourly
+    earnings of all employees, 1982-1984 dollars, total private, seasonally adjusted")을
+    찾았다 — 이 역시 FRED엔 없다(404 확인). 그래서 get_fred_series가 아니라 이 함수를 쓴다.
+    BLS_API_KEY가 있어야 조회된다(등록키 없이는 catalog뿐 아니라 데이터 자체도 막혀 있음,
+    get_bls_relative_importance 주석 참고). 조회 범위는 BLS API 정책상 등록키 기준 최대
+    20년으로 제한된다. ⚠️ 실측으로 발견한 함정 — 21개년(예: 2006~2026)을 요청하면 "20년으로
+    축소"되는데, 이때 BLS는 최신 쪽이 아니라 과거 쪽을 기준으로 유지하고 **최신 데이터를
+    잘라낸다**(2026-07 최신값이 빠지고 2025-12까지만 옴을 실측으로 확인) — 그래서
+    `end_year - years`가 아니라 `end_year - years + 1`로 정확히 `years`개년(포함 경계)만
+    요청해야 최신 데이터가 안 잘린다.
+    """
+    api_key = os.environ.get("BLS_API_KEY")
+    if not api_key:
+        raise MacroDataError(
+            "BLS_API_KEY가 설정되어 있지 않습니다. https://www.bls.gov/developers/ 에서 무료 "
+            "등록키를 발급받아 .env에 추가하세요."
+        )
+
+    end_year = date.today().year
+    payload = {
+        "seriesid": [bls_series_id],
+        "registrationkey": api_key,
+        "startyear": str(end_year - years + 1),
+        "endyear": str(end_year),
+    }
+    try:
+        resp = requests.post(BLS_API_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise MacroDataError(f"BLS API 조회 중 오류가 발생했습니다: {e}") from e
+
+    if data.get("status") != "REQUEST_SUCCEEDED":
+        raise MacroDataError(f"BLS API 오류: {data.get('message')}")
+
+    series_list = data.get("Results", {}).get("series", [])
+    if not series_list or not series_list[0].get("data"):
+        raise MacroDataError(f"BLS 시리즈 '{bls_series_id}'에 데이터가 없습니다.")
+
+    pairs = []
+    for point in series_list[0]["data"]:
+        period = point.get("period", "")
+        if not period.startswith("M") or period == "M13":
+            continue  # M13은 연간 평균 — 월별 시계열에서는 제외한다
+        try:
+            # ⚠️ 실측으로 발견 — BLS는 결측/비공개 값을 "-" 같은 숫자로 변환 불가능한 문자열로
+            # 준다(값 파싱과 날짜 파싱을 분리된 리스트에 각각 append하면 한쪽만 실패했을 때
+            # 길이가 어긋나 pd.Series 생성이 깨진다 — 실측으로 겪은 버그, (날짜, 값) 튜플을
+            # 한 번에 만들고 실패하면 튜플째 건너뛴다).
+            ts = pd.Timestamp(year=int(point["year"]), month=int(period[1:]), day=1)
+            value = float(point["value"])
+        except (TypeError, ValueError):
+            continue
+        pairs.append((ts, value))
+
+    series = pd.Series([v for _, v in pairs], index=pd.DatetimeIndex([t for t, _ in pairs])).sort_index()
+    if series.empty:
+        raise MacroDataError(f"BLS 시리즈 '{bls_series_id}'에 유효한 월별 데이터가 없습니다.")
+    return series
+
+
 def get_indicator_series(key: str) -> pd.Series:
     """카탈로그의 key로 지표 시계열을 조회하는 단일 진입점."""
     indicator = _find_indicator(key)
@@ -879,6 +987,10 @@ def get_indicator_series(key: str) -> pd.Series:
             return get_bond_yield_history(toss_bond_symbol)
         except TossDataError as e:
             raise MacroDataError(str(e)) from e
+
+    bls_series_id = indicator.get("bls_id")
+    if bls_series_id:
+        return get_bls_series(bls_series_id)
 
     return get_fred_series(indicator["fred_id"])
 

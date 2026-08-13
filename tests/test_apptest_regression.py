@@ -224,6 +224,63 @@ def test_macro_indicator_full_flow():
 
 
 @pytest.mark.network
+def test_macro_indicator_price_category_reorg_structure():
+    """물가 재편 라운드(2026-08) — 미국은 4개 물가 카테고리(물가/물가 구성/기저 인플레/
+    물가 파급)가 서로 인접하게 나오고, 한국은 항목이 적은 카테고리(기저 인플레/물가 파급)를
+    만들지 않아 2개(물가/물가 구성)만 있어야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    assert at.exception == []
+
+    us_subheaders = [s.value for s in at.subheader]
+    price_categories = [s for s in us_subheaders if s in ("물가", "물가 구성", "기저 인플레", "물가 파급")]
+    assert price_categories == ["물가", "물가 구성", "기저 인플레", "물가 파급"]  # 순서까지 인접
+
+    us_labels = [b.label for b in at.button]
+    assert "생산자물가지수(PPI)" in us_labels  # "물가"에서 "물가 파급"으로 이동, 사라지지 않음
+    assert "실질 평균 시간당 임금" in us_labels  # 신규 추가
+
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+    assert at.exception == []
+    kr_subheaders = [s.value for s in at.subheader]
+    assert "물가" in kr_subheaders and "물가 구성" in kr_subheaders
+    assert "기저 인플레" not in kr_subheaders  # 빈 카테고리를 만들지 않음
+    assert "물가 파급" not in kr_subheaders
+
+
+@pytest.mark.network
+def test_macro_indicator_new_derived_rate_composites_render():
+    """물가 재편 라운드 STEP1 — 근원 CPI MoM(이 라운드가 명시적으로 지적한 빠진 지표) 등
+    새 파생지표 7종 + 실질임금 YoY가 혼합지표 섹션에서 정상 렌더링되는지, 값이 상식적
+    범위인지(CPI류 YoY 2~5%대, MoM -1~1%대) 확인한다. 혼합지표가 3개→11개로 늘어난 뒤에도
+    버튼 줄바꿈이 깨지지 않는지(레이아웃 회귀)도 함께 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    composite_labels = {b.label for b in at.button if b.key and b.key.startswith("btn_composite_")}
+    expected = {
+        "근원 CPI 상승률 (전년동월대비 %)", "근원 CPI 상승률 (전월대비 %)",
+        "CPI 상승률 (전월대비 %)", "PCE 상승률 (전년동월대비 %)", "PCE 상승률 (전월대비 %)",
+        "근원 PCE 상승률 (전년동월대비 %)", "근원 PCE 상승률 (전월대비 %)",
+        "실질임금 상승률 (전년동월대비 %)",
+    }
+    assert expected <= composite_labels
+
+    btn = next(b for b in at.button if b.label == "근원 CPI 상승률 (전월대비 %)")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("근원 CPI 상승률 (전월대비 %)" in m.value for m in at.markdown)
+
+    btn2 = next(b for b in at.button if b.label == "실질임금 상승률 (전년동월대비 %)")
+    btn2.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+
+@pytest.mark.network
 def test_macro_indicator_employment_report_full_flow():
     """고용보고서 한눈에 보기 + 비농업고용 업종별 분해(둘 다 실제 FRED 조회)가 예외 없이
     렌더링되는지 확인한다 — 두 조사(사업체/가계) 구분 표기와 자기검증(11개 업종 합 vs
@@ -340,8 +397,11 @@ def test_macro_indicator_underlying_inflation_indicator_buttons():
     assert at.exception == []
 
     assert any("절사평균 CPI (1개월연율)" in m.value for m in at.markdown)
+    # ⚠️ 물가 재편 라운드(2026-08)에서 description을 "한 문장으로 읽히게" 정돈하며 영문
+    # "16% Trimmed-Mean CPI"를 "16% 절사평균 CPI"로 바꿨다(라벨 정리 STEP3) — 회귀가 아니라
+    # 의도된 문구 변경이라 이 테스트도 새 문구로 갱신한다.
     assert any(
-        "16% Trimmed-Mean CPI" in c.value and "계절조정" in c.value and "비교하지" in c.value
+        "16% 절사평균 CPI" in c.value and "계절조정" in c.value and "비교하지" in c.value
         for c in at.caption
     )
 
@@ -393,8 +453,11 @@ def test_macro_indicator_underlying_inflation_in_overlay_options():
 
 @pytest.mark.network
 def test_macro_indicator_kr_bond_catalog_buttons_and_fred_relabel():
-    """국채 라운드(2026-08) — 한국 '금리' 카테고리에 기존 FRED 월별(KR_DGS10, 라벨만 변경)과
-    새 토스 일별 6종이 함께 있어야 하고, 둘 다 정상 동작해야 한다(회귀 없음)."""
+    """국채 라운드(2026-08) — 한국 '금리' 카테고리에 기존 FRED 월별(KR_DGS10)과 새 토스 일별
+    6종이 함께 있어야 하고, 둘 다 정상 동작해야 한다(회귀 없음). ⚠️ 물가 재편 라운드(2026-08)
+    에서 라벨의 출처 표기("FRED"/"토스")를 뺐다 — 10년물만 (월별)/(일별) 구분자를 남기고
+    (KR_DGS10과 KR_BOND_10Y가 같은 "국고채 10년"이라 구분이 필요), 나머지 5개 만기는
+    다른 항목과 안 겹쳐 완전히 clean한 라벨("국고채 2년" 등)로 바뀌었다."""
     at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
     at.run()
     country_radio = next(r for r in at.radio if r.label == "국가")
@@ -402,21 +465,22 @@ def test_macro_indicator_kr_bond_catalog_buttons_and_fred_relabel():
     at.run(timeout=90)
 
     labels = [b.label for b in at.button]
-    assert "국고채 10년 (월별·장기, FRED)" in labels  # 기존 KR_DGS10, 라벨만 변경(회귀 아님)
-    for maturity in ["2년", "3년", "5년", "10년", "20년", "30년"]:
-        assert f"국고채 {maturity} (일별, 토스)" in labels
+    assert "국고채 10년 (월별)" in labels  # 기존 KR_DGS10, 라벨 재정리(회귀 아님)
+    assert "국고채 10년 (일별)" in labels  # KR_BOND_10Y
+    for maturity in ["2년", "3년", "5년", "20년", "30년"]:
+        assert f"국고채 {maturity}" in labels  # 겹치는 항목이 없어 구분자 없이 clean
 
     # 새 토스 일별 버튼 클릭 — 정상 렌더링
-    next(b for b in at.button if b.label == "국고채 10년 (일별, 토스)").click()
+    next(b for b in at.button if b.label == "국고채 10년 (일별)").click()
     at.run(timeout=90)
     assert at.exception == []
-    assert any("국고채 10년 (일별, 토스)" in m.value for m in at.markdown)
+    assert any("국고채 10년 (일별)" in m.value for m in at.markdown)
 
     # 기존 FRED 월별 버튼도 여전히 정상 동작(회귀 확인)
-    next(b for b in at.button if b.label == "국고채 10년 (월별·장기, FRED)").click()
+    next(b for b in at.button if b.label == "국고채 10년 (월별)").click()
     at.run(timeout=90)
     assert at.exception == []
-    assert any("국고채 10년 (월별·장기, FRED)" in m.value for m in at.markdown)
+    assert any("국고채 10년 (월별)" in m.value for m in at.markdown)
 
 
 @pytest.mark.network
@@ -452,9 +516,9 @@ def test_macro_indicator_kr_yield_spread_composite_buttons():
     at.run(timeout=90)
 
     labels = [b.label for b in at.button]
-    assert "국채 장단기 금리차 (10Y-2Y, 토스 일별)" in labels
-    assert "국채 장단기 금리차 (10Y-3Y, 토스 일별)" in labels
-    assert "한미 금리차 (국고채 10년, 토스 일별)" in labels
+    assert "국채 장단기 금리차 (10Y-2Y)" in labels
+    assert "국채 장단기 금리차 (10Y-3Y)" in labels
+    assert "한미 금리차 (국고채 10년)" in labels
     assert "한미 정책금리차 (미국 - 한국)" in labels  # 기존 지표, 대체되지 않음(회귀 확인)
 
     next(b for b in at.button if "10Y-2Y" in b.label).click()
