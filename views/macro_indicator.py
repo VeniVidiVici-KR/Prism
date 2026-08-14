@@ -39,7 +39,8 @@ from views._cache import (
     get_filings_by_type,
     get_securities_market_capital_history,
 )
-from views._charts import contribution_bar_chart, line_chart_with_markers, pie_chart
+from views._charts import contribution_bar_chart, line_chart_with_markers, navy_shades, pie_chart
+from views._style import inject_navy_headings
 
 MAX_OVERLAY_INDICATORS = 3
 MAX_BUTTONS_PER_ROW = 5
@@ -134,8 +135,9 @@ UNDERLYING_INFLATION_COMPARISON_KEYS = [
 ]
 
 load_dotenv(override=True)
+inject_navy_headings()
 
-st.title("🌐 Macro Indicator")
+st.title("Macro Indicator")
 st.caption("가능한 긴 시계열의 물가/금리/고용/성장/통화 지표 · 정보 제공 목적이며 투자자문이 아닙니다.")
 
 country = st.radio("국가", ["미국", "한국"], horizontal=True)
@@ -684,7 +686,13 @@ if country_code == "US":
             if aligned.empty:
                 st.warning("선택한 항목들 사이에 겹치는 기간이 없습니다.")
             else:
-                st.line_chart(aligned)
+                # ⚠️ 디자인 라운드 — 이 뷰는 6개 시리즈라(헤드라인/근원 CPI·PCE·절사평균·중위)
+                # 기본 네이비 램프(4색)가 순환돼 두 쌍이 같은 색으로 겹친다. 겹치는 구간이
+                # 40년치 월별 데이터라(아래 캡션 참고) line_chart_with_markers로 바꾸면 점
+                # 표식이 수백~수천 개 찍혀 무거워진다 — 차트 종류는 그대로 두고
+                # st.line_chart의 color 인자(1.59에서 지원, wide-format 컬럼 수만큼 색 리스트)
+                # 로 navy_shades(6)만 명시적으로 넘긴다. 레이아웃·차트 종류 변경 없음.
+                st.line_chart(aligned, color=navy_shades(len(aligned.columns)))
                 st.caption(
                     f"겹치는 구간({aligned.index[0]:%Y-%m} ~ {aligned.index[-1]:%Y-%m}) · "
                     "모두 12개월 변화율(%)·계절조정(SA) 동일 기준이라 정규화하지 않았습니다."

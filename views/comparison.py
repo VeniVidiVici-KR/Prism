@@ -15,10 +15,12 @@ from views._cache import (
     get_valuation_snapshot,
     resolve_ticker,
 )
+from views._style import inject_navy_headings
 
 load_dotenv(override=True)
+inject_navy_headings()
 
-st.title("⚖️ Comparison")
+st.title("Comparison")
 st.caption("최대 4개 종목의 밸류에이션과 성장률/수익성 추이를 비교합니다 · 정보 제공 목적이며 투자자문이 아닙니다.")
 
 MAX_TICKERS = 4

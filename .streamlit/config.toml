@@ -1,0 +1,69 @@
+# PRISM 네이비 모노크로매틱 디자인 시스템 — 라이트 테마 (2026-08 디자인 라운드).
+#
+# ⚠️ 여기 쓴 키는 전부 설치된 Streamlit 1.59.2가 실제로 지원하는 [theme] 옵션이다
+# (site-packages/streamlit/config.py의 _create_theme_options 정의를 직접 확인했다 —
+# 추측이 아니다). 팔레트 표의 토큰 이름을 주석으로 나란히 적어 색상 코드와 의도를 함께
+# 추적할 수 있게 했다.
+#
+# ⚠️ 의도적으로 뺀 키:
+# - font/headingFont/codeFont 등 폰트 계열 — 이번 라운드는 "색상 팔레트"만 지정됐고
+#   폰트는 범위 밖이다(디자인 원칙에도 언급 없음). Streamlit 기본 폰트 유지.
+# - metricValueFontSize/Weight — "st.metric의 값은 기본 스타일 유지"라는 명시적 지시.
+# - redColor/orangeColor/yellowColor/blueColor/violetColor/grayColor(및 Background/
+#   Text 변형) — st.error/success 등에 영향을 주는 "기본 팔레트" 토큰이다. 팔레트 표에는
+#   signal.positive/negative 2색만 있고 대응하는 orange/blue가 없어, red/green만 바꾸면
+#   st.warning(주황)·st.info(파랑)는 그대로 남아 오히려 더 불균질해진다 — 4종 알림 상자를
+#   전부 일관되게 다루려면 팔레트에 없는 색을 새로 만들어야 하므로("네 번째 색조 도입
+#   금지" 위반) 전부 Streamlit 기본값으로 남겼다.
+# - chartDivergingColors — 이 앱에서 diverging 스케일을 쓰는 곳이 없다(기여도/증감
+#   막대차트는 이미 views/_charts.py에서 signal.positive/negative를 명시적으로
+#   지정하므로 이 전역 설정과 무관하게 항상 우선한다). 실측 결과 적용될 곳이 없어 뺐다.
+# - showWidgetBorder/showSidebarBorder — 색상이 아니라 위젯 테두리 표시 여부라
+#   "색상 팔레트" 적용 범위 밖으로 판단, 기본값 유지.
+
+[theme]
+base = "light"
+
+# navy.primary — 버튼·슬라이더 등 위젯의 강조색. 기존 코드가 이미 선택된 지표 버튼에
+# type="primary"를 쓰고 있어(_render_indicator_buttons), 이 설정만으로 그 버튼들이
+# 자동으로 네이비로 바뀐다.
+primaryColor = "#1E4D8B"
+
+# canvas — 페이지 배경(흰색, 팔레트 규칙대로 "배경이지 대등한 색이 아니다").
+backgroundColor = "#FFFFFF"
+
+# navy.tint — 위젯(입력창, 코드블록, 사이드바 등) 배경. 가장 옅은 워시를 깔아 네이비가
+# 크롬 전반에 은은하게 배어들게 한다(팔레트 규칙: 네이비가 60~70% 비중).
+secondaryBackgroundColor = "#F0F5FB"
+
+# ink.primary — 본문 텍스트.
+textColor = "#1A1A2E"
+
+# hairline — 위젯·표 테두리.
+borderColor = "#E5E7EB"
+dataframeBorderColor = "#E5E7EB"
+
+# navy.pale — 표 헤더 배경. navy.deep을 그대로 배경에 쓰면 본문 텍스트(ink.primary, 어두운
+# 색)와 대비가 무너져 안 읽힌다 — 그래서 옅은 톤을 헤더 배경으로 쓰고, navy.deep은 아래
+# views/_style.py에서 "텍스트" 색으로만 쓴다(가독성 우선, STEP4 지시 그대로).
+dataframeHeaderBackgroundColor = "#D6E3F2"
+
+# navy.primary — 링크.
+linkColor = "#1E4D8B"
+
+# 차트 카테고리 색상 — Plotly/Altair/Vega-Lite 전부에 적용된다(st.line_chart/st.bar_chart처럼
+# 별도 색 인코딩이 없는 네이티브 차트가 이 설정을 그대로 탄다). 순서: navy.deep → navy.primary
+# → navy.mid → navy.light. 카테고리가 4개를 넘으면 Streamlit이 순환시킨다(공식 동작) — 더
+# 세밀한 구분이 필요한 차트(예: CPI 구성항목처럼 5개 이상)는 views/_charts.py의
+# line_chart_with_markers가 명도 단계를 늘려 자체적으로 처리한다.
+chartCategoricalColors = ["#0A2E5C", "#1E4D8B", "#4A7FBA", "#8AAED6"]
+
+# 연속형(그라데이션) 차트용 10색 — 이 앱은 현재 연속형 스케일을 쓰는 차트가 없지만, "실제로
+# 지원되는 키"이고 네이비 모노크로매틱 원칙에 맞춰 무해하게 채워둔다. 팔레트의 7개 토큰을
+# 그대로 쓰고(tint/pale/light/mid/primary/deep/deepest), 정확히 10개가 필요하다는 문서
+# 요건을 맞추려 3개 구간의 중간값만 보간해 채웠다(전 구간을 한 번에 보간하면 중간톤이 탁한
+# 회색처럼 보여서 — 실측으로 확인 — 이미 잘 고른 7개 앵커를 최대한 그대로 살렸다).
+chartSequentialColors = [
+    "#F0F5FB", "#E3ECF7", "#D6E3F2", "#8AAED6", "#4A7FBA",
+    "#3466A3", "#1E4D8B", "#0A2E5C", "#09254E", "#081C3F",
+]

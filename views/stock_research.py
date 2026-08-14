@@ -47,6 +47,7 @@ from valley.valuation import (
     suggest_coe,
 )
 from views._charts import line_chart_with_markers
+from views._style import inject_navy_headings
 from views._cache import (
     get_company_snapshot,
     get_corp_code,
@@ -116,8 +117,9 @@ def _is_financial_industry(industry: str | None) -> bool:
     return industry.startswith(_FINANCIAL_INDUSTRY_PREFIXES)
 
 load_dotenv(override=True)
+inject_navy_headings()
 
-st.title("📈 PRISM")
+st.title("PRISM")
 st.caption("종목 재무분석 + 간단 DCF 밸류에이션 + AI 해설 · 정보 제공 목적이며 투자자문이 아닙니다.")
 
 # 시장 스냅샷 — ⚠️ 이 프로젝트에서 유일하게 "버튼 클릭 없이" 페이지 진입만으로 자동 조회되는
@@ -449,7 +451,7 @@ if currency != "KRW":
     # 필드가 전부 없는 종목(예: 상장폐지·데이터 미제공 소형주)은 섹션 자체를 띄우지 않는다 —
     # 있는 것만 개별 표시하되, 아예 아무것도 없으면 빈 subheader만 남는 걸 피한다.
     if overview_fields or business_summary:
-        st.subheader("🏢 회사 개요")
+        st.subheader("회사 개요")
         if overview_fields:
             cols = st.columns(len(overview_fields))
             for col, (label, value) in zip(cols, overview_fields):
@@ -598,7 +600,7 @@ else:
 
 # 3-1. 공시 목록 (DART) — yfinance 재무 성공/실패와 무관하게 한국 종목이면 항상 표시하는
 # 상시 섹션이다 (위 재무 추이의 DART 폴백과는 성격이 다름 — 폴백이 아니라 항상 노출).
-st.subheader("📢 최근 공시 (DART)")
+st.subheader("최근 공시 (DART)")
 if currency != "KRW":
     # ⚠️ 기존 DART 섹션 로직(else 분기)은 그대로 두고, 이 안내 문구만 최소로 손본다 — 바로
     # 아래에 EDGAR 섹션이 실제로 추가됐는데 "추후 지원 예정"이라는 예전 문구를 그대로 두면
@@ -655,7 +657,7 @@ else:
 
 # 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용 파일럿.
 # ⚠️ 이번 라운드에서 8-K 본문 AI 요약을 추가했다 — 10-K/10-Q 요약은 여전히 다음 라운드 범위.
-st.subheader("📄 최근 공시 (SEC EDGAR)")
+st.subheader("최근 공시 (SEC EDGAR)")
 if currency == "KRW":
     st.info("한국 종목은 위 DART 공시를 이용하세요. SEC EDGAR는 미국 상장기업 전용입니다.")
 else:
@@ -930,7 +932,7 @@ else:
 # 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인
 # (KRX_ID/KRX_PW)이 있어야 조회되므로, 로그인 정보가 없거나 KRX가 막으면 이 섹션만
 # 경고로 안내하고 나머지 섹션(재무/DCF/Peer/공시)은 정상 동작한다.
-st.subheader("📊 투자자별 수급 (외국인·기관·개인)")
+st.subheader("투자자별 수급 (외국인·기관·개인)")
 if currency != "KRW":
     st.info("현재는 한국 상장기업 수급만 제공합니다. 해외 종목은 투자자별 매매동향 공개 데이터가 없습니다.")
 else:
@@ -1012,7 +1014,7 @@ else:
 # (조회 당일 데이터가 아직 없고 전일까지만 온다) — UI 캡션에 명시한다. 호출이 3회(지표당
 # 1회) 나가므로 macro_indicator.py의 버튼 게이팅 섹션들과 같은 패턴으로 클릭 시에만
 # 조회한다(위 수급 섹션은 자동 조회지만, 이 섹션은 요청에 따라 명시적으로 게이팅한다).
-st.subheader("⚠️ 종목 리스크 지표 (공매도·신용·대차)")
+st.subheader("종목 리스크 지표 (공매도·신용·대차)")
 if currency != "KRW":
     st.info("이 지표는 국내 상장기업 전용입니다(토스증권 API). 해외 종목은 지원하지 않습니다.")
 elif not (os.environ.get("TOSS_CLIENT_ID") and os.environ.get("TOSS_CLIENT_SECRET")):
@@ -1180,7 +1182,7 @@ if _is_financial_industry(snapshot.get("industry")):
         "(DDM)이나 P/B·ROE 기반으로 평가합니다. 아래 수치는 참고용으로만 보세요."
     )
 
-    st.subheader("🏦 P/B × ROE 밸류에이션 (금융업)")
+    st.subheader("P/B × ROE 밸류에이션 (금융업)")
     st.caption(
         "은행 등 금융업의 1차 밸류에이션 지표입니다. 정당(justified) P/B = ROE / COE(단순형) — "
         "자기자본으로 요구수익률(COE)보다 높은 ROE를 벌면 장부가 대비 프리미엄을 받을 자격이 "
@@ -1247,7 +1249,7 @@ if _is_financial_industry(snapshot.get("industry")):
     # 💰 DDM(배당할인모형) — P/B×ROE와 나란히 제공하는 은행·보험 밸류에이션의 또 다른 축.
     # ⚠️ COE는 위 DCF·P/B×ROE와 같은 discount_rate(사이드바 값)를 그대로 재사용한다 — 같은
     # 종목에서 세 밸류에이션의 COE가 다르면 혼란스럽다.
-    st.subheader("💰 DDM (배당할인모형)")
+    st.subheader("DDM (배당할인모형)")
     st.caption(
         "은행·보험의 또 다른 축 밸류에이션입니다. 주당가치 = D1 / (COE − g), D1 = D0 × (1 + g) — "
         "배당이 매년 g로 영구히 성장한다는 가정(Gordon Growth)에 기반합니다."
@@ -1336,7 +1338,7 @@ if fcf_excluded_years:
 # 안에 중첩돼 있어 DCF가 st.stop()으로 멈추면 이 표까지 통째로 안 보였다(정리 라운드 과제).
 # "세 성장률 대조"(시장 내재 성장률 포함)만 DCF 성공 시에만 의미가 있어 그 부분은 아래 DCF
 # 성공 블록에 남겨두고, growth 변수를 여기서 계산해 그대로 재사용한다(중복 조회 없음).
-st.subheader("📈 과거 FCF 증가율")
+st.subheader("과거 FCF 증가율")
 growth = None
 try:
     fcf_history_for_growth = get_free_cash_flow_history(resolved_ticker, years=4)
@@ -1738,7 +1740,7 @@ else:
 
 # 8. DART 원본 재무제표 (실험) — DCF 성공 여부와 무관하게 항상 도달 가능한 독립 섹션.
 st.divider()
-st.subheader("🔬 DART 원본 재무제표 (실험)")
+st.subheader("DART 원본 재무제표 (실험)")
 st.caption(
     "OpenDART 전자공시 원본 재무제표를 yfinance 기반 수치와 대조해보는 파일럿 기능입니다. "
     "위의 다른 분석 결과에는 전혀 반영되지 않으며, 검증 목적으로만 존재합니다."

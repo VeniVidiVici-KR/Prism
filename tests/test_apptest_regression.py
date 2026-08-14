@@ -43,7 +43,10 @@ def test_stock_research_initial_entry_no_click():
          patch("valley.market_snapshot.get_us_market_state", return_value=None):
         at = _load("stock_research.py")
     assert at.exception == []
-    assert at.title[0].value == "📈 PRISM"
+    # ⚠️ 디자인 라운드(2026-08)에서 섹션 제목의 이모지 아이콘을 일괄 제거했다(전문 대시보드
+    # 인상 — 기존엔 13개 헤더 중 일부만 이모지가 있어 이미 불일치했음). 회귀가 아니라 의도된
+    # 변경이라 새 문구로 갱신한다.
+    assert at.title[0].value == "PRISM"
 
 
 def test_screener_initial_entry_no_click():

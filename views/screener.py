@@ -6,10 +6,12 @@ from dotenv import load_dotenv
 from valley.data import TickerNotFoundError
 from valley.peers import build_valuation_table
 from views._cache import get_valuation_snapshot, resolve_ticker
+from views._style import inject_navy_headings
 
 load_dotenv(override=True)
+inject_navy_headings()
 
-st.title("🔍 Screener")
+st.title("Screener")
 st.caption("여러 종목의 PER/PBR/배당/ROE/시가총액을 한 번에 훑어봅니다 · 정보 제공 목적이며 투자자문이 아닙니다.")
 
 DEFAULT_UNIVERSE = [
