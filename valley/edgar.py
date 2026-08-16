@@ -37,6 +37,33 @@ _FILING_TEXT_MAX_CHARS = 45000
 # 잡는다 — 넘으면 앞부분만 쓰고 잘렸다는 사실을 결과에 명시한다(8-K와 동일한 투명성 원칙).
 _MDA_TEXT_MAX_CHARS = 90000
 
+# 424B(발행설명서) 요약 대상 텍스트 길이 가드 — ⚠️ 2026-08 라운드 실측 근거.
+# MD&A처럼 항목번호로 섹션을 구조적으로 잘라내지 않고 "앞부분 N자" 방식을 쓴다. 이유:
+# 1) 발행조건(금액·쿠폰·만기·트랜치)은 SEC 규정상 항상 표지(cover page)에 있어 문서 맨 앞
+#    수천자 안에 100% 들어있다(AAPL 424B2·AMZN 424B5 실측 모두 확인) — 구조 탐색이 필요 없다.
+# 2) "USE OF PROCEEDS"를 표제어로 찾는 구조적 추출은 MD&A보다 함정이 크다 — 실측 결과 같은
+#    문자열이 목차(다음 줄이 페이지번호)와 본문 교차참조("... 'Use of Proceeds' 참조")에도
+#    나타나 오탐 위험이 있고, 게다가 실제 섹션 위치가 필자 템플릿(AAPL은 Donnelley Financial,
+#    AMZN은 Toppan Merrill, 서로 다른 제출대행사)마다 크게 달라(AAPL 약 3만자 지점, AMZN 약
+#    4.7만자 지점) 위치 기반 추정도 못 미덥다. 그래서 앞부분을 넉넉히(6만자) 잘라 표지+요약+
+#    위험요인+자금사용목적을 대부분 포함시키는 쪽을 택했다 — 8-K(4.5만자)보다 크고 MD&A
+#    (9만자)보다는 작은 중간 규모.
+# 3) iXBRL 숨은 텍스트 문제는 없었다(실측: AAPL 424B2·DLR 424B7 둘 다 xmlns:ix 자체가 없음 —
+#    424B는 정기보고서가 아니라 iXBRL 태깅 대상이 아니다). _html_to_text를 그대로 재사용해도
+#    무방하다.
+_FORM_424B_TEXT_MAX_CHARS = 60000
+
+# 424B 하위 유형 중 "신규 발행 조건"(금액·쿠폰·만기)이 실제로 있는 유형만 화이트리스트로
+# 둔다 — ⚠️ 실측(2026-08 라운드) 근거: 424B2(AAPL·GOOGL 다수)·424B5(AMZN·ORCL 다수)는 표지에
+# 트랜치별 금액·쿠폰·만기·상환조건·인수단 가격표가 전부 있는 정식 채권 발행서류였다. 반면
+# 424B3(MSFT 실측)은 이미 발행된 미등록채권을 등록채권으로 바꿔주는 "교환제안(exchange
+# offer)" 설명서라 신규 자금조달이 없고, 424B7(DLR 실측)은 기존 주주가 보유 주식을 파는
+# "2차 매도(선행 매도인 매각)" 설명서라 회사가 받는 대금 자체가 0이다(둘 다 "발행조건" 개념이
+# 성립하지 않음) — 이 두 유형엔 요약 버튼을 띄우지 않는다. 목록에 없는 다른 424B 하위유형
+# (424B1/424B4/424B6/424B8 등)은 이번 라운드에 실측 표본이 없어 보수적으로 제외했다 —
+# 추측으로 포함시키지 않는다.
+FORM_424B_TYPES_WITH_TERMS = {"424B2", "424B5"}
+
 # 10-K/10-Q는 MD&A를 가리키는 Item 번호가 다르다(실측 확인) — 10-K는 Item 7(~7A 또는 8
 # 직전까지), 10-Q는 Part I Item 2(~3 또는 4 직전까지). form_type별로 반드시 분기해야 한다.
 # "end"를 우선 쓰고 못 찾으면 "end_fallback"으로 넘어간다(일부 문서는 7A를 8과 합쳐 쓰기도 함).
@@ -526,3 +553,44 @@ def get_mda_section_text(
         mda_text = mda_text[:max_chars]
 
     return {"text": mda_text, "truncated": truncated}
+
+
+def get_424b_filing_text(
+    cik: str, accession_number: str, form_type: str, max_chars: int = _FORM_424B_TEXT_MAX_CHARS
+) -> dict:
+    """424B(발행설명서) 원문 텍스트를 앞부분 max_chars까지 가져온다.
+
+    ⚠️ get_mda_section_text와 달리 표제어로 섹션을 구조적으로 잘라내지 않는다 — 8-K처럼
+    문서 앞부분을 통째로 쓴다(_FORM_424B_TEXT_MAX_CHARS 주석에 실측 근거 기록). 발행조건은
+    항상 표지에 있어 이 방식으로 충분히 잡히고, 표제어 탐색은 목차/교차참조 오탐 위험과
+    필자 템플릿별 위치 편차가 실측으로 확인돼 기각했다.
+
+    form_type은 정확한 424B 하위유형 문자열(예: "424B2")이어야 한다 — 색인 페이지의 문서
+    표 "Type" 열이 하위유형까지 정확히 구분해 표기하므로(실측 확인, MD&A의 "10-K"/"10-Q"와
+    같은 방식) 그대로 매칭에 쓴다.
+
+    Returns:
+        {"text": str, "truncated": bool}
+
+    Raises:
+        EdgarDataError: 색인에서 문서를 못 찾았거나 원문 조회에 실패했을 때.
+    """
+    primary_url = _find_filing_document_url(cik, accession_number, form_type)
+    if primary_url is None:
+        raise EdgarDataError(f"공시 색인에서 {form_type} 원문 문서를 찾지 못했습니다.")
+
+    try:
+        resp = requests.get(primary_url, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        raise EdgarDataError(f"{form_type} 원문을 가져오지 못했습니다: {e}") from e
+
+    text = _html_to_text(resp.content)
+    if not text.strip():
+        raise EdgarDataError("추출된 424B 원문이 비어 있습니다.")
+
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars]
+
+    return {"text": text, "truncated": truncated}

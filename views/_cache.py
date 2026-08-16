@@ -20,12 +20,14 @@ from valley.dart import get_corp_code as _get_corp_code
 from valley.dart import get_dart_disclosure_list as _get_dart_disclosure_list
 from valley.dart import get_dart_financial_statements as _get_dart_financial_statements
 from valley.edgar import get_8k_filing_text as _get_8k_filing_text
+from valley.edgar import get_424b_filing_text as _get_424b_filing_text
 from valley.edgar import get_cik as _get_cik
 from valley.edgar import get_filings_by_type as _get_filings_by_type
 from valley.edgar import get_mda_section_text as _get_mda_section_text
 from valley.edgar import get_recent_filings as _get_recent_filings
 from valley.company_summary import summarize_company_overview as _summarize_company_overview
 from valley.edgar_summary import summarize_8k_filing as _summarize_8k_filing
+from valley.edgar_summary import summarize_424b_filing as _summarize_424b_filing
 from valley.edgar_summary import summarize_mda_section as _summarize_mda_section
 from valley.kofia import get_credit_balance_history as _get_credit_balance_history
 from valley.kofia import get_securities_market_capital_history as _get_securities_market_capital_history
@@ -235,6 +237,23 @@ def summarize_8k_filing(
     버튼 클릭 시에만 호출되도록 하는 건 UI(views/stock_research.py) 쪽 책임이고, 이 캐싱은
     그 위에 얹는 이중 방어(같은 세션 안 재실행·재클릭 시 재호출 방지)다."""
     return _summarize_8k_filing(company_name, form, filing_date, text, truncated, engine)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_424b_filing_text(cik: str, accession_number: str, form_type: str) -> dict:
+    """424B 원문(앞부분)도 접수된 공시라 사실상 불변 — get_8k_filing_text와 동일한 기준(ttl
+    길게)으로 캐싱한다. form_type이 캐시 키에 포함돼 같은 accession이라도 유형별로 분리된다
+    (이론상 한 accession은 한 form_type만 갖지만, get_mda_section_text와 시그니처를 맞췄다)."""
+    return _get_424b_filing_text(cik, accession_number, form_type)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def summarize_424b_filing(
+    company_name: str, form: str, filing_date: str, text: str, truncated: bool, engine: str | None = None
+) -> str:
+    """⚠️ 비용 통제 핵심 지점(424B용) — summarize_8k_filing과 동일한 이유로 text와 engine을
+    전부 캐시 키에 포함한다."""
+    return _summarize_424b_filing(company_name, form, filing_date, text, truncated, engine)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)

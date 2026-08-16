@@ -607,7 +607,9 @@ def test_macro_indicator_bond_issuance_full_flow():
         at.run()
         assert len(calls) == 0  # 자동 로드 금지
 
-        btn = next(b for b in at.button if b.label == "주요 기업 채권 발행 동향 불러오기")
+        # ⚠️ 424B 요약/티커 직접 조회 라운드(2026-08)에서 "주요 기업 한눈에 보기 불러오기"로
+        # 개명됐다(9개 기업 통합 뷰를 티커 직접 조회의 보조 버튼으로 재배치) — 의도된 변경.
+        btn = next(b for b in at.button if b.label == "주요 기업 한눈에 보기 불러오기")
         btn.click()
         at.run(timeout=120)
         assert at.exception == []
@@ -622,6 +624,111 @@ def test_macro_indicator_bond_issuance_full_flow():
     # 최신순 통합 정렬 확인
     dates = issuance_df["접수일"].tolist()
     assert dates == sorted(dates, reverse=True)
+
+
+# ── 424B 티커 직접 조회 라운드(2026-08) ──────────────────────────────────────
+# ⚠️ 이 구간도 파일 상단 정책(AI 요약 버튼 클릭 금지)을 지킨다 — 요약 버튼의 "존재 여부"만
+# 확인하고 클릭하지 않는다(클릭 후 캐싱 검증은 tests/test_edgar_424b_cache.py가 담당).
+
+
+def test_macro_indicator_bond_ticker_kr_code_short_circuits_no_network():
+    """6자리 숫자(한국 종목코드)를 넣으면 EDGAR 조회 자체를 하지 않고 바로 안내한다 —
+    get_cik가 아예 호출되지 않는지 확인한다(불필요한 네트워크 호출 방지)."""
+    import views._cache as cache_mod
+
+    with patch.object(cache_mod, "_get_cik", side_effect=AssertionError("get_cik가 호출되면 안 됨")):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        at.text_input(key="macro_bond_ticker_input").input("005930")
+        next(b for b in at.button if b.key == "btn_bond_ticker_query").click()
+        at.run()
+        assert at.exception == []
+
+    assert any("미국 상장 티커만 지원" in i.value for i in at.info)
+
+
+def test_macro_indicator_bond_ticker_zero_result_message():
+    """424B 이력이 0건인 티커는 "조회 실패"와 구분되는 안내를 보여준다(mock으로 결정적
+    재현 — 장기 상장기업은 실측으로 진짜 0건 사례를 찾기 어려웠다)."""
+    import views._cache as cache_mod
+
+    with patch.object(cache_mod, "_get_cik", return_value="0000000001"), \
+         patch.object(cache_mod, "_get_filings_by_type", return_value=[]):
+        cache_mod.get_cik.clear()
+        cache_mod.get_filings_by_type.clear()
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        at.text_input(key="macro_bond_ticker_input").input("ZEROTEST")
+        next(b for b in at.button if b.key == "btn_bond_ticker_query").click()
+        at.run()
+        assert at.exception == []
+
+    assert any("발행설명서) 이력이 없습니다" in i.value for i in at.info)
+
+
+def test_macro_indicator_bond_ticker_summarize_button_only_for_terms_bearing_types():
+    """424B2(발행조건 있음)엔 요약 버튼이 뜨고, 424B3(발행조건 없음, 교환제안류)엔 뜨지
+    않으며 대신 안내 캡션이 뜨는지 확인한다 — 버튼은 존재 여부만 확인하고 클릭하지 않는다."""
+    import views._cache as cache_mod
+
+    fake_filings = [
+        {
+            "form": "424B2", "filing_date": "2025-05-06", "description": "424B2",
+            "accession_number": "0001140361-25-017543", "url": "https://example.com/424b2",
+        },
+        {
+            "form": "424B3", "filing_date": "2024-05-06", "description": "424B3",
+            "accession_number": "0001193125-24-131951", "url": "https://example.com/424b3",
+        },
+    ]
+    with patch.object(cache_mod, "_get_cik", return_value="0000320193"), \
+         patch.object(cache_mod, "_get_filings_by_type", return_value=fake_filings):
+        cache_mod.get_cik.clear()
+        cache_mod.get_filings_by_type.clear()
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        at.text_input(key="macro_bond_ticker_input").input("AAPL")
+        next(b for b in at.button if b.key == "btn_bond_ticker_query").click()
+        at.run()
+        assert at.exception == []
+
+    button_keys = {b.key for b in at.button if b.key}
+    assert "macro_bond_summarize_btn_0001140361-25-017543_school" in button_keys  # 424B2 → 있음
+    assert "macro_bond_summarize_btn_0001193125-24-131951_school" not in button_keys  # 424B3 → 없음
+    assert any("신규 발행 조건이 없는 유형" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_macro_indicator_bond_ticker_normal_case_real_data():
+    """실제 SEC EDGAR로 티커 직접 조회(호출 1회) — 표가 뜨고, 424B2/424B5 필링이 있으면
+    요약 버튼도 함께 뜨는지 확인한다(클릭은 하지 않음)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=120)
+    at.run()
+    at.text_input(key="macro_bond_ticker_input").input("AAPL")
+    next(b for b in at.button if b.key == "btn_bond_ticker_query").click()
+    at.run(timeout=120)
+    assert at.exception == []
+
+    bond_df = next((df for df in at.dataframe if "유형" in df.value.columns and "원문" in df.value.columns), None)
+    assert bond_df is not None
+    assert len(bond_df.value) > 0
+
+    forms = set(bond_df.value["유형"])
+    summarize_keys = [b.key for b in at.button if b.key and b.key.startswith("macro_bond_summarize_btn_")]
+    has_terms_type = any(f.startswith("424B2") or f.startswith("424B5") for f in forms)
+    assert bool(summarize_keys) == has_terms_type  # 발행조건 있는 유형이 있을 때만 요약 버튼 존재
+
+
+@pytest.mark.network
+def test_macro_indicator_bond_ticker_not_mapped_real():
+    """SEC EDGAR 티커 목록에 없는 문자열은 명확한 경고로 구분된다(조회 실패와 다름)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    at.text_input(key="macro_bond_ticker_input").input("ZZZZZZZ99")
+    next(b for b in at.button if b.key == "btn_bond_ticker_query").click()
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("찾지 못했습니다" in w.value for w in at.warning)
 
 
 @pytest.mark.network
