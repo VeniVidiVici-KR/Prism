@@ -948,8 +948,10 @@ def _render_cpi_breakdown(
     rate_label: str = "YoY(%)",
     headline_label: str = "YoY",
     warn_threshold_pct: float | None = None,
+    as_of_month: str | None = None,
 ) -> None:
-    """구성 비중 원 그래프 + 기여도 막대그래프 + 자기검증(기여도 합 vs 헤드라인)을 그린다.
+    """헤드라인 변화율(st.metric) + 구성 비중 원 그래프 + 기여도 막대그래프 + 자기검증(기여도
+    합 vs 헤드라인)을 그린다.
 
     components 각 항목은 이미 "공통으로 존재하는 최신 월" 기준으로 정렬된 {"label",
     "weight_pct", rate_key}이고, 호출부(국가별 분기)가 그 정렬을 책임진다.
@@ -959,7 +961,15 @@ def _render_cpi_breakdown(
     없다. MoM 호출부만 rate_key="mom" 등으로 명시적으로 넘긴다. warn_threshold_pct는 MoM처럼
     변화폭 자체가 작아(0.1~0.4%) 같은 절대 오차라도 상대오차가 커지는 뷰에서만 넘겨(30) 헤드라인
     대비 오차 비율이 크면 추가 경고를 띄운다 — 넘기지 않으면(YoY) 기존과 동일하게 조용하다.
+
+    ⚠️ as_of_month는 헤드라인 표시 라운드(2026-08)에서 추가 — 이전엔 헤드라인 변화율이 맨 아래
+    자기검증 캡션에만 작은 글씨로 있어 "이번 달 물가가 몇 % 움직였나"라는 가장 기본적인 숫자가
+    파묻혀 있었다. st.metric으로 표 위 최상단에 크게 보여준다(YoY/MoM 공통 적용). 자기검증
+    캡션은 그대로 두되(검증 목적은 유지), 헤드라인 값 자체는 여기서 먼저 보여준다.
     """
+    if headline_value is not None:
+        st.metric(f"헤드라인 CPI {headline_label}", f"{headline_value:+.2f}%", help=f"기준월: {as_of_month}" if as_of_month else None)
+
     contrib_df, total_contribution = compute_cpi_contributions(components, rate_key=rate_key, rate_label=rate_label)
     weight_sum = contrib_df["가중치(%)"].sum()
     st.caption(f"가중치 합계: {weight_sum:.1f}% (100%에서 크게 벗어나면 항목 누락/중복 가능성 — 위 캡션의 출처 참고).")
@@ -1059,7 +1069,7 @@ if country_code == "US":
                         except MacroDataError:
                             pass
 
-                        _render_cpi_breakdown(components, headline_value)
+                        _render_cpi_breakdown(components, headline_value, as_of_month=f"{common_month:%Y-%m}")
             else:  # MoM (전월비) — ⚠️ 계절조정(SA) 계열 사용, valley/macro.py의
                 # US_CPI_COMPONENT_SA_KEYS 주석 참고. 가중치는 위 YoY와 동일하게
                 # US_CPI_COMPONENT_BLS_IDS를 재사용한다(새로 조회하지 않음).
@@ -1113,7 +1123,7 @@ if country_code == "US":
                         _render_cpi_breakdown(
                             components, headline_value,
                             rate_key="mom", rate_label="MoM(%)", headline_label="MoM",
-                            warn_threshold_pct=30.0,
+                            warn_threshold_pct=30.0, as_of_month=f"{common_month:%Y-%m}",
                         )
                         st.caption(
                             "⚠️ 기여도는 근사치입니다 — 합계와 헤드라인의 차이는 가중치 시차· "
@@ -1178,7 +1188,7 @@ else:
                         except MacroDataError:
                             pass
 
-                        _render_cpi_breakdown(components, headline_value)
+                        _render_cpi_breakdown(components, headline_value, as_of_month=f"{common_month:%Y-%m}")
             else:  # MoM (전월비) — ⚠️ ECOS에 CPI 계절조정(SA) 계열이 없어(실측 확인, STEP 0
                 # 보고 참고) 원계열(NSA)을 그대로 쓴다. 위 YoY와 같은 컴포넌트 시리즈·가중치를
                 # 재사용하고 mom_percent()만 다르게 적용한다(새 데이터 소스 없음).
@@ -1234,7 +1244,7 @@ else:
                         _render_cpi_breakdown(
                             components, headline_value,
                             rate_key="mom", rate_label="MoM(%)", headline_label="MoM",
-                            warn_threshold_pct=30.0,
+                            warn_threshold_pct=30.0, as_of_month=f"{common_month:%Y-%m}",
                         )
                         st.caption(
                             "⚠️ 기여도는 근사치입니다 — 합계와 헤드라인의 차이는 가중치 시차· "

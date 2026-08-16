@@ -40,9 +40,40 @@ COMPOSITE_INDICATORS = {
         {"key": "US_REAL_WAGE_YOY", "label": "실질임금 상승률 (전년동월대비 %)"},
         {"key": "US_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
         {"key": "US_M2_GDP", "label": "M2 / 명목GDP"},
+        # ⚠️ 성장·소비 변화율 라운드(2026-08) — GDP QoQ(연율)는 복리 환산이 필요해 BEA 공식
+        # 시리즈를 "성장·소비" 카탈로그에 직접 등록했지만(valley/macro.py 주석 참고), YoY는
+        # 단순 pct_change(4)로 안전하게 재현되어(실측: BEA 공식 YoY 시리즈와 소수점까지 일치)
+        # 여기서 자체 계산한다. 소매판매(RSAFS)는 실측 확인 결과 이미 계절조정(SA) 계열이라
+        # (Dec→Jan 급락 없음, Census의 NSA 대응 계열 MRTSSM44X72USN과 대조해 SA임을 확인)
+        # MoM에 별도 SA 계열을 찾을 필요 없이 그대로 mom_percent/yoy_percent를 적용한다.
+        {"key": "US_GDP_REAL_YOY", "label": "실질 GDP 성장률 (전년동기비%)"},
+        {"key": "US_GDP_NOMINAL_YOY", "label": "명목 GDP 성장률 (전년동기비%)"},
+        {"key": "US_RSAFS_MOM", "label": "소매판매 (전월비%)"},
+        {"key": "US_RSAFS_YOY", "label": "소매판매 (전년동월비%)"},
+        # 주택착공건수(HOUST)는 %변화 대신 3개월 이동평균(수준)을 제공한다 — 실측 MoM이
+        # ±15~19%p까지 튀어(2026-05 -15.2%, 2026-06 +19.0%) 원계열 %변화 버튼은 오독을 부른다고
+        # 판단했다. 소비자심리지수(UMCSENT)는 지역 연준 확산지수와 같은 이유로(레벨 자체가
+        # "심리 수준"으로 읽히는 지표) 변화율을 추가하지 않았다 — 기존 지역 연준 서베이가 YoY
+        # 없이 레벨만 제공하는 것과 동일 원칙.
+        {"key": "US_HOUST_MA3", "label": "주택착공건수 (3개월 이동평균)"},
     ],
     "KR": [
         {"key": "KR_CPI_YOY", "label": "CPI 상승률 (전년동월대비 %)"},
+        # ⚠️ 물가 재편 라운드에서 미국만 CPI MoM(US_CPI_MOM)을 추가했었다 — 한국은 ECOS에
+        # CPI 계절조정(SA) 계열이 없어(실측 확인) 원계열(NSA) 그대로 mom_percent를 적용한다.
+        # description이 없는 혼합지표 버튼 구조상 이 사실을 라벨에 못 담아 아래 캡션(뷰)에서
+        # 안내한다. 카탈로그 파생(INDICATORS)이 아니라 여기 혼합 지표에 둔 이유: 같은 KR_CPI_YOY
+        # 옆에 나란히 있어야 "이미 YoY가 있는데 MoM만 빠졌다"는 사용자 관찰과 정확히 대응되고,
+        # 새로운 원본 데이터 소스가 아니라 기존 KR_CPI를 mom_percent()로 변환한 값이라 카탈로그
+        # (원본 지표 전용)보다 혼합 지표(파생 지표 전용) 성격에 맞다.
+        {"key": "KR_CPI_MOM", "label": "CPI 상승률 (전월대비 %)"},
+        # 한국 GDP는 미국과 달리 연율화(SAAR)하지 않고 전분기비를 그대로 쓰는 것이 한국은행의
+        # 관행이다 — 실측 확인: FRED 공식 시리즈 NAEXKP01KRQ657S(전분기비)·KORGDPRQPSMEI
+        # (전년동기비)가 KR_GDP 레벨에서 직접 계산한 pct_change(1)/(4)와 소수점까지 정확히
+        # 일치했다(연율화 없는 단순 비율이라 자체 계산이 안전 — 미국 QoQ와 다른 지점). 그래서
+        # 별도 fred_id 등록 없이 여기서 자체 계산한다.
+        {"key": "KR_GDP_REAL_QOQ", "label": "실질 GDP 성장률 (전분기비%)"},
+        {"key": "KR_GDP_REAL_YOY", "label": "실질 GDP 성장률 (전년동기비%)"},
         {"key": "KR_REAL_RATE", "label": "실질금리 (기준금리 - CPI YoY%)"},
         {"key": "KR_M2_GDP", "label": "M2 / 명목GDP"},
         {"key": "KR_EXPORTS_YOY", "label": "수출 증가율 (전년동월대비 %)"},
@@ -142,13 +173,18 @@ def _cpi_yoy(country: str) -> pd.Series:
     return yoy
 
 
-def _index_yoy(key: str, label: str | None = None) -> pd.Series:
+def _index_yoy(key: str, label: str | None = None, periods: int = 12) -> pd.Series:
     """물가 재편 라운드(2026-08)에서 추가 — 임의의 지수 카탈로그 key를 전년동월대비 상승률(%)로
     변환하는 범용 헬퍼다. _cpi_yoy가 "{country}_CPI" 패턴으로 하드코딩됐던 것과 달리, 근원
     CPI·PCE·근원 PCE 등 어떤 지수 키에도 재사용한다(새 계산 로직 없이 yoy_percent() 재사용).
+
+    ⚠️ periods는 성장·소비 변화율 라운드(2026-08)에서 추가한 파라미터다(기본값 12는 기존
+    월별 호출부와 완전히 동일해 회귀 없음). GDP처럼 분기 데이터는 periods=4가 "전년동기비"이고,
+    한국 GDP의 "전분기비"(연율화 없이 그대로, valley/macro.py "성장·소비" 카테고리 주석 참고)는
+    periods=1로 이 함수를 재사용하는 대신 아래 _index_mom(동일 계산)을 쓴다.
     """
     series = get_indicator_series(key)
-    yoy = yoy_percent(series)
+    yoy = yoy_percent(series, periods=periods)
     if yoy.empty:
         raise MacroDataError(f"{label or key} 상승률(YoY)을 계산할 만큼 데이터가 충분하지 않습니다.")
     return yoy
@@ -163,6 +199,19 @@ def _index_mom(key: str, label: str | None = None) -> pd.Series:
     if mom.empty:
         raise MacroDataError(f"{label or key} 상승률(MoM)을 계산할 만큼 데이터가 충분하지 않습니다.")
     return mom
+
+
+def _moving_average(key: str, window: int, label: str | None = None) -> pd.Series:
+    """성장·소비 변화율 라운드(2026-08)에서 추가 — 단일 지표 원계열의 N개월 이동평균(수준,
+    %가 아님). 주택착공건수(HOUST)처럼 월별 변동성이 극심한(실측: MoM ±15~19%p) 계열은
+    %변화 버튼을 그대로 붙이면 오히려 오독을 부른다고 판단해, 대신 판다스 rolling만 적용한
+    스무딩된 수준을 제공한다(새 계산 로직 없이 rolling().mean() 재사용).
+    """
+    series = get_indicator_series(key)
+    ma = series.rolling(window).mean().dropna()
+    if ma.empty:
+        raise MacroDataError(f"{label or key} {window}개월 이동평균을 계산할 만큼 데이터가 충분하지 않습니다.")
+    return ma
 
 
 def _real_rate(country: str) -> pd.Series:
@@ -283,6 +332,15 @@ _COMPUTE = {
     "US_CORE_PCE_YOY": lambda: _index_yoy("US_CORE_PCE", "근원 PCE"),
     "US_CORE_PCE_MOM": lambda: _index_mom("US_CORE_PCE", "근원 PCE"),
     "US_REAL_WAGE_YOY": lambda: _index_yoy("US_REAL_AVG_HOURLY_EARNINGS", "실질임금"),
+    # ⚠️ 성장·소비 변화율 라운드(2026-08) — 위 COMPOSITE_INDICATORS 목록의 주석 참고.
+    "US_GDP_REAL_YOY": lambda: _index_yoy("US_GDPC1", "실질 GDP", periods=4),
+    "US_GDP_NOMINAL_YOY": lambda: _index_yoy("US_GDP_NOMINAL", "명목 GDP", periods=4),
+    "US_RSAFS_MOM": lambda: _index_mom("US_RSAFS", "소매판매"),
+    "US_RSAFS_YOY": lambda: _index_yoy("US_RSAFS", "소매판매"),
+    "US_HOUST_MA3": lambda: _moving_average("US_HOUST", 3, "주택착공건수"),
+    "KR_CPI_MOM": lambda: _index_mom("KR_CPI", "CPI"),
+    "KR_GDP_REAL_QOQ": lambda: _index_mom("KR_GDP", "실질 GDP"),
+    "KR_GDP_REAL_YOY": lambda: _index_yoy("KR_GDP", "실질 GDP", periods=4),
 }
 
 

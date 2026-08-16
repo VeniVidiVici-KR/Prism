@@ -206,3 +206,79 @@ def test_us_cpi_mom_uses_headline_not_core():
     with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
         get_composite_series("US_CPI_MOM")
     mock_fn.assert_called_once_with("US_CPI")
+
+
+# ── 성장·소비 변화율 라운드(2026-08) — GDP YoY(분기, periods=4)·소매판매 MoM/YoY·주택착공건수
+# 이동평균(HOUST_MA3)·한국 CPI MoM·한국 GDP QoQ/YoY. ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "key,expected_source",
+    [
+        ("US_GDP_REAL_YOY", "US_GDPC1"),
+        ("US_GDP_NOMINAL_YOY", "US_GDP_NOMINAL"),
+        ("US_RSAFS_MOM", "US_RSAFS"),
+        ("US_RSAFS_YOY", "US_RSAFS"),
+        ("KR_CPI_MOM", "KR_CPI"),
+        ("KR_GDP_REAL_QOQ", "KR_GDP"),
+        ("KR_GDP_REAL_YOY", "KR_GDP"),
+    ],
+)
+def test_growth_consumption_indicators_read_correct_source_key(key, expected_source):
+    """복사-붙여넣기로 엉뚱한 원천 키를 참조하지 않는지 확인한다."""
+    idx = pd.date_range("2025-01-01", periods=13, freq="MS")
+    series = pd.Series([100 + i for i in range(13)], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series) as mock_fn:
+        get_composite_series(key)
+    mock_fn.assert_called_once_with(expected_source)
+
+
+def test_gdp_real_yoy_uses_periods_4_not_12():
+    """⚠️ 핵심 회귀 — GDP는 분기 데이터라 YoY는 4분기 전 대비여야 한다. 기존 _index_yoy
+    기본값(periods=12, 월별 가정)을 그대로 썼다면 5개 분기 데이터로는 빈 시리즈가 나와
+    MacroDataError가 터진다 — 그 경우 이 테스트가 실패로 잡아낸다."""
+    idx = pd.date_range("2025-01-01", periods=5, freq="QS")
+    series = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series):
+        result = get_composite_series("US_GDP_REAL_YOY")
+    assert result.iloc[-1] == pytest.approx(4.0)  # (104-100)/100 * 100
+
+
+def test_kr_gdp_real_yoy_uses_periods_4():
+    idx = pd.date_range("2025-01-01", periods=5, freq="QS")
+    series = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series):
+        result = get_composite_series("KR_GDP_REAL_YOY")
+    assert result.iloc[-1] == pytest.approx(4.0)
+
+
+def test_kr_gdp_real_qoq_uses_periods_1_not_4():
+    """⚠️ 핵심 회귀 — 한국 GDP는 미국과 달리 연율화하지 않고 전분기비를 그대로 쓴다
+    (valley/composite.py COMPOSITE_INDICATORS 주석의 실측 근거 참고). periods=4(YoY)와
+    값으로 구분되는지 확인한다."""
+    idx = pd.date_range("2025-01-01", periods=5, freq="QS")
+    series = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series):
+        qoq = get_composite_series("KR_GDP_REAL_QOQ")
+        yoy = get_composite_series("KR_GDP_REAL_YOY")
+    assert qoq.iloc[-1] == pytest.approx((104 / 103 - 1) * 100)
+    assert qoq.iloc[-1] != pytest.approx(yoy.iloc[-1])
+
+
+def test_houst_ma3_is_rolling_mean_not_percent_change():
+    """주택착공건수는 변동성이 극심해(실측 MoM ±15~19%p) %변화 대신 3개월 이동평균(수준)을
+    제공한다 — 값이 %가 아니라 원래 단위 그대로의 평균인지 확인한다."""
+    idx = pd.date_range("2025-01-01", periods=5, freq="MS")
+    series = pd.Series([1000.0, 1100.0, 1200.0, 1300.0, 1400.0], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series):
+        result = get_composite_series("US_HOUST_MA3")
+    assert len(result) == 3  # 5개월 - (window-1) = 3개
+    assert result.iloc[-1] == pytest.approx((1200 + 1300 + 1400) / 3)
+
+
+def test_houst_ma3_raises_when_shorter_than_window():
+    idx = pd.date_range("2025-01-01", periods=2, freq="MS")
+    series = pd.Series([1000.0, 1100.0], index=idx)
+    with patch("valley.composite.get_indicator_series", return_value=series):
+        with pytest.raises(MacroDataError):
+            get_composite_series("US_HOUST_MA3")

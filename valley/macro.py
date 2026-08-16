@@ -398,9 +398,31 @@ INDICATORS = {
                 "description": "비농업고용 업종별 분해(11개 업종 중 1개) · 사업체조사(CES) · 공공 교육·보건 종사자 포함",
             },
         ],
+        # ⚠️ 성장·소비 변화율 라운드(2026-08) — GDP는 분기 데이터라 MoM이 성립하지 않고, 시장이
+        # 보는 표준 수치는 "전분기 대비 연율(QoQ SAAR)"이다. 이 연율화는 단순 pct_change가 아니라
+        # 복리 환산 공식((1+분기증가율)^4 - 1)이 필요해 직접 계산하면 실수 위험이 크므로, BEA가
+        # 이미 계산해 FRED에 공개한 공식 시리즈(A191RL1Q225SBEA/A191RP1Q027SBEA)를 그대로 쓴다 —
+        # 값 검증: 실질(A191RL1Q225SBEA) 최근값이 -0.6~4.7%대(2023~2026), 명목(A191RP1Q027SBEA)이
+        # 실질값보다 항상 몇%p 높게(=물가상승분) 움직여 두 계열의 정합성을 실측으로 교차 확인했다.
+        # ⚠️ YoY(전년동기비)는 반대로 단순 pct_change(4)만으로 정확히 재현됨을 실측 확인했다
+        # (GDPC1 레벨로 직접 계산한 값이 BEA 공식 YoY 시리즈 A191RO1Q156NBEA와 소수점까지 일치) —
+        # 연율화 위험이 없는 계산이라 별도 fred_id를 등록하지 않고 혼합 지표(US_GDP_REAL_YOY/
+        # US_GDP_NOMINAL_YOY)에서 yoy_percent(periods=4)로 자체 계산한다(카탈로그에는 "직접
+        # 계산하면 위험한 것"만 fred_id로 남긴다는 원칙 — 아래 소매판매 MoM/YoY도 동일 원칙으로
+        # 혼합 지표에 있다).
         "성장·소비": [
             {"key": "US_GDPC1", "label": "실질 GDP", "fred_id": "GDPC1"},
+            {
+                "key": "US_GDP_REAL_QOQ_SAAR", "label": "실질 GDP 성장률 (전분기비 연율%)",
+                "fred_id": "A191RL1Q225SBEA",
+                "description": "BEA 공식 산출 · 전분기 대비 연율(SAAR) 환산 — GDP 발표에서 흔히 인용되는 수치",
+            },
             {"key": "US_GDP_NOMINAL", "label": "명목 GDP", "fred_id": "GDP"},
+            {
+                "key": "US_GDP_NOMINAL_QOQ_SAAR", "label": "명목 GDP 성장률 (전분기비 연율%)",
+                "fred_id": "A191RP1Q027SBEA",
+                "description": "BEA 공식 산출 · 전분기 대비 연율(SAAR) 환산",
+            },
             {"key": "US_RSAFS", "label": "소매판매", "fred_id": "RSAFS"},
             {"key": "US_UMCSENT", "label": "소비자심리지수(미시간대)", "fred_id": "UMCSENT"},
             {"key": "US_HOUST", "label": "주택착공건수", "fred_id": "HOUST"},

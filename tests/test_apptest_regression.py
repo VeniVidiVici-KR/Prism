@@ -356,9 +356,89 @@ def test_macro_indicator_cpi_contribution_mom_view_kr():
     # 전기가스수도 -0.17%p 방향과 일치). 항목 분류가 달라 절대값은 다를 수 있으니 부호만 본다.
     assert mom_df.loc["주택, 수도, 전기 및 연료", "기여도(%p)"] < 0
     assert mom_df.loc["교통", "기여도(%p)"] < 0
-
     assert any("원계열" in c.value and "계절조정" in c.value for c in at.caption)  # NSA 한계 명시
     assert any("비교하지" in c.value for c in at.caption)  # 미국-한국 비교 금지 캡션
+
+
+@pytest.mark.network
+def test_macro_indicator_cpi_headline_metric_shown_top():
+    """헤드라인 표시 라운드(2026-08) — 이전엔 헤드라인 CPI 변화율이 맨 아래 자기검증 캡션에만
+    작은 글씨로 있었다. YoY/MoM 두 모드 모두 표 위에 st.metric으로 먼저 보이는지 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    btn = next(b for b in at.button if b.label == "구성 비중 & 기여도 불러오기")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    yoy_metric = next(m for m in at.metric if m.label == "헤드라인 CPI YoY")
+    assert yoy_metric.value.endswith("%")
+
+    mode_radio = next(r for r in at.radio if r.label == "기여도 기준")
+    mode_radio.set_value("MoM (전월비)")
+    at.run(timeout=90)
+    assert at.exception == []
+
+    mom_metric = next(m for m in at.metric if m.label == "헤드라인 CPI MoM")
+    assert mom_metric.value.endswith("%")
+
+
+@pytest.mark.network
+def test_macro_indicator_growth_consumption_category_expanded():
+    """성장·소비 변화율 라운드(2026-08) — GDP 실질·명목 QoQ(연율) 2개가 "성장·소비" 카테고리에
+    직접 추가돼(8개 버튼) 배치가 깨지지 않는지, 실제로 클릭했을 때 예외 없이 렌더링되는지
+    확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    growth_labels = {b.label for b in at.button if b.key and b.key.startswith("btn_US_")}
+    assert {
+        "실질 GDP", "실질 GDP 성장률 (전분기비 연율%)", "명목 GDP", "명목 GDP 성장률 (전분기비 연율%)",
+        "소매판매", "소비자심리지수(미시간대)", "주택착공건수",
+    } <= growth_labels
+
+    btn = next(b for b in at.button if b.label == "실질 GDP 성장률 (전분기비 연율%)")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+    assert any("실질 GDP 성장률 (전분기비 연율%)" in m.value for m in at.markdown)
+
+
+@pytest.mark.network
+def test_macro_indicator_growth_consumption_composites_render():
+    """성장·소비 변화율 라운드(2026-08) — GDP YoY(분기)·소매판매 MoM/YoY·주택착공 3개월
+    이동평균(미국), CPI MoM·GDP QoQ/YoY(한국)가 혼합 지표 섹션에 뜨고 클릭 시 예외가 없는지,
+    값이 상식 범위인지(소매판매 MoM 대략 -1~+1%대, YoY 2~5%대) 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    composite_labels = {b.label for b in at.button if b.key and b.key.startswith("btn_composite_")}
+    expected_us = {
+        "실질 GDP 성장률 (전년동기비%)", "명목 GDP 성장률 (전년동기비%)",
+        "소매판매 (전월비%)", "소매판매 (전년동월비%)", "주택착공건수 (3개월 이동평균)",
+    }
+    assert expected_us <= composite_labels
+
+    rsafs_mom_btn = next(b for b in at.button if b.label == "소매판매 (전월비%)")
+    rsafs_mom_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    houst_btn = next(b for b in at.button if b.label == "주택착공건수 (3개월 이동평균)")
+    houst_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+    kr_composite_labels = {b.label for b in at.button if b.key and b.key.startswith("btn_composite_")}
+    assert {"CPI 상승률 (전월대비 %)", "실질 GDP 성장률 (전분기비%)", "실질 GDP 성장률 (전년동기비%)"} <= kr_composite_labels
+
+    kr_cpi_mom_btn = next(b for b in at.button if b.label == "CPI 상승률 (전월대비 %)")
+    kr_cpi_mom_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
 
 
 @pytest.mark.network
