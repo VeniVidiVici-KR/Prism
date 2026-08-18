@@ -1144,3 +1144,77 @@ def test_macro_indicator_kofia_missing_key_no_crash(monkeypatch):
         assert at.exception == []
         assert not [b for b in at.button if "신용공여" in b.label]
         assert any("KOFIA_API_KEY" in i.value for i in at.info)
+
+
+@pytest.mark.network
+def test_macro_indicator_debt_gdp_projection_button_shows_combined_view():
+    """전망 반영 라운드(2026-08) — "재정" 카테고리에 실적(기존)·전망(신규) 버튼이 함께 있고,
+    ⚠️ 전망 버튼을 눌러도 전망만 나오는 게 아니라 실적+전망 결합 뷰가 나와야 한다(전망만 보면
+    어디서부터 전망인지 기준이 안 잡힘). 경계연도·"확정치 아님" 캡션도 확인한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    fiscal_labels = {b.label for b in at.button if b.key and b.key.startswith("btn_US_DEBT_GDP")}
+    assert fiscal_labels == {"국가부채/GDP", "국가부채/GDP (전망)"}  # 실적 대체 아님, 순수 추가
+
+    proj_btn = next(b for b in at.button if b.label == "국가부채/GDP (전망)")
+    proj_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    assert any("실적 + IMF 전망" in m.value for m in at.markdown)
+    boundary_caption = next(c for c in at.caption if "년까지 실적" in c.value)
+    assert "2024" in boundary_caption.value  # 조사 라운드 실측: 미국은 2024년까지 실적
+    assert any("확정치가 아닙니다" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_macro_indicator_debt_gdp_actual_button_also_shows_combined_view():
+    """실적 버튼("국가부채/GDP")을 눌러도 전망 버튼과 동일하게 결합 뷰가 나오는지 확인한다
+    (둘 중 어느 쪽을 눌러도 같은 화면 — 라운드가 요구한 "실적+전망을 이어 그리되" 원칙)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run()
+
+    actual_btn = next(b for b in at.button if b.label == "국가부채/GDP")
+    actual_btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    assert any("실적 + IMF 전망" in m.value for m in at.markdown)
+    boundary_caption = next(c for c in at.caption if "년까지 실적" in c.value)
+    assert "2023" in boundary_caption.value  # 조사 라운드 실측: 한국은 2023년까지 실적
+
+
+@pytest.mark.network
+def test_macro_indicator_debt_gdp_comparison_shows_actual_and_projection_columns():
+    """한미 비교 섹션 STEP 2 — 표에 최신 실적/최신 전망이 구분된 열로 함께 나오고, 값이 조사
+    라운드에서 확인한 범위(2026년 전망: 미국 약 123.7%, 한국 약 55.7% — 단, 표의 "최신 전망"은
+    시계열의 마지막 연도인 2030년 값이라 그보다 더 크다)와 상식적으로 일치하는지 확인한다.
+    ⚠️ 기존 join="outer" 실적 전용 차트도 회귀 없이 그대로 있어야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+
+    btn = next(b for b in at.button if b.label == "한미 국가부채/GDP 비교 보기")
+    btn.click()
+    at.run(timeout=90)
+    assert at.exception == []
+
+    debt_df = next(df for df in at.dataframe if "최신 전망(%)" in df.value.reset_index().columns).value
+    assert {"최신 실적(%)", "실적 기준연도", "최신 전망(%)", "전망 기준연도"} <= set(debt_df.columns)
+
+    us_row = debt_df.loc["미국"]
+    kr_row = debt_df.loc["한국"]
+    assert us_row["실적 기준연도"] == "2024"
+    assert kr_row["실적 기준연도"] == "2023"
+    assert us_row["전망 기준연도"] == "2030"
+    assert kr_row["전망 기준연도"] == "2030"
+    # 조사 라운드 실측(2024년 미 120.8%, 2030년 전망까지 우상향)과 상식적으로 정합하는지.
+    assert 100 < us_row["최신 실적(%)"] < 140
+    assert us_row["최신 전망(%)"] > us_row["최신 실적(%)"]  # 전망이 실적보다 더 뒤 연도값
+    assert 30 < kr_row["최신 실적(%)"] < 70
+    assert kr_row["최신 전망(%)"] > kr_row["최신 실적(%)"]
+
+    assert any("실적 + IMF 전망" in m.value for m in at.markdown)  # STEP 2 결합 뷰도 함께 렌더링

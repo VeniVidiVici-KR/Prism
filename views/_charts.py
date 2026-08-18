@@ -132,6 +132,61 @@ def line_chart_with_markers(data: pd.DataFrame, height: int = 320) -> None:
     st.altair_chart(chart, width="stretch")
 
 
+def actual_projection_line_chart(series_pairs: dict[str, tuple[pd.Series, pd.Series | None]], height: int = 320) -> None:
+    """{계열이름: (실적, 전망 또는 None)}을 실적(실선)+전망(점선)으로 이어 그린다.
+
+    전망 반영 라운드(2026-08)에서 추가 — 국가부채/GDP처럼 실적과 IMF 전망이 이어지는
+    시계열을 "어디부터 전망인지" 헷갈리지 않게 보여줘야 하는 용도다. ⚠️ 새 색조를 추가하는
+    대신, 계열 구분은 기존 navy_shades()로(1개 계열이면 단색), 실적/전망 구분은 strokeDash로
+    한다 — 팔레트 자체는 그대로 두고 인코딩 채널만 하나 늘렸다.
+
+    ⚠️ 실적의 마지막 관측치를 전망 구간의 시작점으로도 복제해 넣는다(값 자체는 그대로, 차트
+    표시 전용 보정) — 그렇지 않으면 Altair가 실적/전망을 완전히 분리된 두 선으로 그려 둘
+    사이에 시각적 공백(gap)이 생긴다. 실적 데이터 자체를 바꾸는 게 아니다.
+    """
+    frames = []
+    for label, (actual, projection) in series_pairs.items():
+        # ⚠️ Series.reset_index()는 (DataFrame.reset_index와 달리) names= 인자를 지원하지
+        # 않는다(pandas 2.3) — rename_axis로 인덱스 이름을 먼저 바꾼 뒤 reset_index()한다.
+        actual_df = actual.rename("값").rename_axis("기간").reset_index()
+        actual_df["계열"] = label
+        actual_df["구분"] = "실적"
+        frames.append(actual_df)
+        if projection is not None and not projection.empty and not actual.empty:
+            bridge = pd.DataFrame(
+                {"기간": [actual.index[-1]], "값": [float(actual.iloc[-1])], "계열": [label], "구분": ["전망"]}
+            )
+            projection_df = projection.rename("값").rename_axis("기간").reset_index()
+            projection_df["계열"] = label
+            projection_df["구분"] = "전망"
+            frames.append(pd.concat([bridge, projection_df], ignore_index=True))
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined["기간"] = combined["기간"].apply(lambda d: d.strftime("%Y") if hasattr(d, "strftime") else str(d))
+    year_order = sorted(combined["기간"].unique())
+    series_names = list(series_pairs.keys())
+
+    chart = (
+        alt.Chart(combined)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("기간:N", sort=year_order, title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("값:Q", title=None),
+            color=alt.Color(
+                "계열:N",
+                legend=alt.Legend(title=None) if len(series_names) > 1 else None,
+                scale=alt.Scale(domain=series_names, range=navy_shades(len(series_names))),
+            ),
+            strokeDash=alt.StrokeDash(
+                "구분:N", legend=alt.Legend(title=None), scale=alt.Scale(domain=["실적", "전망"], range=[[1, 0], [6, 4]])
+            ),
+            tooltip=["기간", "계열", "구분", alt.Tooltip("값:Q", format=".1f")],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
 def pie_chart(data: pd.DataFrame, category_col: str, value_col: str, height: int = 320) -> None:
     """항목별 비중(%)을 원 그래프로 그린다 — 항목명과 비중%를 툴팁/각도로 표시한다."""
     categories = list(data[category_col])

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from valley.macro import MacroDataError, get_bls_series, get_indicator_series, normalize_indexed
+from valley.macro import INDICATORS, MacroDataError, get_bls_series, get_indicator_series, normalize_indexed
 
 
 def test_normalize_indexed_first_observation_becomes_base():
@@ -141,3 +141,30 @@ def test_get_indicator_series_dispatches_bls_id_key():
         result = get_indicator_series("US_REAL_AVG_HOURLY_EARNINGS")
     mock_fn.assert_called_once_with("CES0500000013")
     assert result.iloc[-1] == pytest.approx(11.30)
+
+
+# ── 전망 반영 라운드(2026-08) — 국가부채/GDP 실적 시리즈는 그대로 두고 전망 시리즈만
+# 추가했는지(대체가 아닌 순수 추가) 카탈로그 구조로 고정해둔다. ──────────────────────────────
+
+
+def test_debt_gdp_actual_series_not_replaced():
+    """⚠️ 핵심 회귀 — 실적 카탈로그 항목(US_DEBT_GDP/KR_DEBT_GDP)의 fred_id가 조사 라운드에서
+    확인한 실적 시리즈(...A188N) 그대로인지, 실수로 전망 시리즈(...P188N)로 바뀌지 않았는지."""
+    us_actual = next(ind for inds in INDICATORS["US"].values() for ind in inds if ind["key"] == "US_DEBT_GDP")
+    kr_actual = next(ind for inds in INDICATORS["KR"].values() for ind in inds if ind["key"] == "KR_DEBT_GDP")
+    assert us_actual["fred_id"] == "GGGDTAUSA188N"
+    assert kr_actual["fred_id"] == "GGGDTAKRA188N"
+
+
+def test_debt_gdp_projection_series_added_with_correct_fred_ids():
+    us_proj = next(
+        ind for inds in INDICATORS["US"].values() for ind in inds if ind["key"] == "US_DEBT_GDP_PROJECTION"
+    )
+    kr_proj = next(
+        ind for inds in INDICATORS["KR"].values() for ind in inds if ind["key"] == "KR_DEBT_GDP_PROJECTION"
+    )
+    assert us_proj["fred_id"] == "GGGDTPUSA188N"
+    assert kr_proj["fred_id"] == "GGGDTPKRA188N"
+    # 라벨에 소스 표기 없이 짧게(지난 정리 라운드 원칙 준수) — "(전망)"만 붙는다.
+    assert us_proj["label"] == "국가부채/GDP (전망)"
+    assert kr_proj["label"] == "국가부채/GDP (전망)"

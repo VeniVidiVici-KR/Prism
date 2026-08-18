@@ -43,7 +43,7 @@ from views._cache import (
     get_securities_market_capital_history,
     summarize_424b_filing,
 )
-from views._charts import contribution_bar_chart, line_chart_with_markers, navy_shades, pie_chart
+from views._charts import actual_projection_line_chart, contribution_bar_chart, line_chart_with_markers, navy_shades, pie_chart
 from views._style import inject_navy_headings
 
 MAX_OVERLAY_INDICATORS = 3
@@ -122,6 +122,13 @@ CREDIT_SPREAD_COMPARISON_KEYS = {
 # 몇 주~두 달 이내 발행 기록, MSFT/AAPL은 상대적으로 오래전 — 최근엔 회사채보다 자체
 # 현금흐름으로 조달 중일 가능성).
 BOND_ISSUANCE_UNIVERSE = ["GOOGL", "MSFT", "AMZN", "META", "ORCL", "NVDA", "AAPL", "EQIX", "DLR"]
+
+# "국가부채/GDP" 실적+전망 결합 뷰 전용(전망 반영 라운드, 2026-08) — 실적 key -> 전망 key
+# 매핑과 그 역방향. 실적/전망 버튼 중 어느 쪽을 눌러도 항상 같은 결합 뷰(실적 실선 + IMF 전망
+# 점선)를 보여주기 위해 양방향으로 찾는다. valley/macro.py "재정" 카테고리 주석 참고.
+_DEBT_GDP_PROJECTION_OF = {"US_DEBT_GDP": "US_DEBT_GDP_PROJECTION", "KR_DEBT_GDP": "KR_DEBT_GDP_PROJECTION"}
+_DEBT_GDP_ACTUAL_OF = {v: k for k, v in _DEBT_GDP_PROJECTION_OF.items()}
+_DEBT_GDP_COUNTRY_LABEL = {"US_DEBT_GDP": "미국", "KR_DEBT_GDP": "한국"}
 
 # "기저 인플레 비교" 뷰 전용 — 헤드라인/근원은 지수 카탈로그라 yoy_percent()로 12개월 변화율을
 # 계산해야 하고("index_yoy"), 절사평균/중위 계열은 FRED가 이미 12개월 변화율(%)로 주므로 그대로
@@ -228,6 +235,41 @@ def _render_indicator_buttons(indicators: list[dict]) -> None:
                 st.rerun()
 
 
+def _render_debt_gdp_actual_projection(actual_key: str) -> None:
+    """국가부채/GDP 실적+IMF 전망을 실적(실선)+전망(점선) 결합 차트로 그린다.
+
+    ⚠️ "국가부채/GDP"·"국가부채/GDP (전망)" 버튼 중 어느 쪽을 눌러도 이 함수가 불려 항상 같은
+    결합 뷰를 보여준다 — 전망만 따로 보고 싶어 "(전망)" 버튼을 눌렀더라도 실적 없이 전망만
+    보여주면 어디서부터가 전망인지 기준이 안 잡혀 오히려 헷갈린다.
+    """
+    country_label = _DEBT_GDP_COUNTRY_LABEL[actual_key]
+    projection_key = _DEBT_GDP_PROJECTION_OF[actual_key]
+    try:
+        actual = _load_series(actual_key)
+    except MacroDataError as e:
+        st.warning(f"국가부채/GDP({country_label}): {e}")
+        return
+
+    st.markdown("**국가부채/GDP (실적 + IMF 전망)**")
+    st.caption("일반정부 총부채, IMF WEO 기준 · 연간")
+
+    try:
+        projection = _load_series(projection_key)
+    except MacroDataError as e:
+        st.line_chart(actual)
+        st.caption(f"⚠️ 전망 데이터를 가져오지 못해 실적만 표시합니다: {e}")
+        st.caption(f"데이터 기준일: {actual.index[-1]:%Y-%m} · {len(actual)}개 관측치")
+        return
+
+    actual_projection_line_chart({country_label: (actual, projection)})
+    boundary_year = actual.index[-1].year
+    st.caption(
+        f"⚠️ {country_label}은 {boundary_year}년까지 실적(실선)이고, {boundary_year + 1}~"
+        f"{projection.index[-1].year}년은 IMF 전망(점선)입니다. ⚠️ 전망치는 확정치가 아닙니다 — "
+        "IMF 자체 추정이며 WEO 발표(연 2회) 때마다 수정될 수 있습니다."
+    )
+
+
 for category, indicators in INDICATORS[country_code].items():
     st.subheader(category)
     _render_indicator_buttons(indicators)
@@ -238,19 +280,23 @@ selected_key = st.session_state.get("macro_selected")
 if not selected_key:
     st.info("위에서 지표 버튼을 눌러주세요.")
 else:
-    indicator = next(
-        ind for indicators in INDICATORS[country_code].values() for ind in indicators if ind["key"] == selected_key
-    )
-    try:
-        series = _load_series(selected_key)
-    except MacroDataError as e:
-        st.warning(f"{indicator['label']}: {e}")
+    _debt_gdp_actual_key = selected_key if selected_key in _DEBT_GDP_PROJECTION_OF else _DEBT_GDP_ACTUAL_OF.get(selected_key)
+    if _debt_gdp_actual_key:
+        _render_debt_gdp_actual_projection(_debt_gdp_actual_key)
     else:
-        st.markdown(f"**{indicator['label']}**")
-        if indicator.get("description"):
-            st.caption(indicator["description"])
-        st.line_chart(series)
-        st.caption(f"데이터 기준일: {series.index[-1]:%Y-%m} · {len(series)}개 관측치")
+        indicator = next(
+            ind for indicators in INDICATORS[country_code].values() for ind in indicators if ind["key"] == selected_key
+        )
+        try:
+            series = _load_series(selected_key)
+        except MacroDataError as e:
+            st.warning(f"{indicator['label']}: {e}")
+        else:
+            st.markdown(f"**{indicator['label']}**")
+            if indicator.get("description"):
+                st.caption(indicator["description"])
+            st.line_chart(series)
+            st.caption(f"데이터 기준일: {series.index[-1]:%Y-%m} · {len(series)}개 관측치")
 
 st.divider()
 st.header("혼합 지표")
@@ -1425,8 +1471,8 @@ st.caption(
     "국제 비교 표준인 일반정부 총부채(General government gross debt, IMF WEO 기준, GFSM 2001 "
     "정의)로 미국·한국을 동일 기준으로 비교합니다. 이미 IMF가 %로 계산해 발표한 값을 그대로 "
     "쓰고(지수·절대액에서 직접 나누지 않음), 둘 다 같은 단위(%)라 정규화 없이 원값을 겹쳐 "
-    "그립니다. ⚠️ 연간 데이터라 두 나라의 최신 발표 연도가 다를 수 있습니다 — 표의 '기준연도' "
-    "열을 확인하세요."
+    "그립니다. ⚠️ 연간 데이터라 두 나라의 최신 발표 연도가 다를 수 있습니다 — 표의 '실적 "
+    "기준연도' 열을 확인하세요."
 )
 
 _DEBT_GDP_KEYS = {"미국": "US_DEBT_GDP", "한국": "KR_DEBT_GDP"}
@@ -1449,20 +1495,50 @@ if st.session_state.get("macro_debt_gdp_loaded"):
     if not debt_series:
         st.info("표시할 수 있는 데이터가 없습니다.")
     else:
-        debt_rows = [
-            {"국가": label, "최신값(%)": s.iloc[-1], "기준연도": s.index[-1].strftime("%Y")}
-            for label, s in debt_series.items()
-        ]
+        # ⚠️ 전망 반영 라운드(2026-08) — 표에 "최신 실적"과 "최신 전망"을 구분된 열로 함께
+        # 보여준다(값을 뭉뚱그리지 않는다). 전망 조회가 실패해도 실적 행 자체는 그대로 보여준다
+        # (부분 실패를 표 전체 실패로 만들지 않음 — 기존 debt_failed 안내 패턴과 동일).
+        debt_projection_series: dict[str, pd.Series] = {}
+        debt_rows = []
+        for country_label, s in debt_series.items():
+            row = {"국가": country_label, "최신 실적(%)": s.iloc[-1], "실적 기준연도": s.index[-1].strftime("%Y")}
+            projection_key = _DEBT_GDP_PROJECTION_OF[_DEBT_GDP_KEYS[country_label]]
+            try:
+                projection = _load_series(projection_key)
+            except MacroDataError as e:
+                row["최신 전망(%)"] = None
+                row["전망 기준연도"] = None
+                debt_failed.append(f"{country_label} 전망: {e}")
+            else:
+                debt_projection_series[country_label] = projection
+                row["최신 전망(%)"] = projection.iloc[-1]
+                row["전망 기준연도"] = projection.index[-1].strftime("%Y")
+            debt_rows.append(row)
+
         st.dataframe(
-            pd.DataFrame(debt_rows).set_index("국가").style.format({"최신값(%)": "{:.1f}%"}),
+            pd.DataFrame(debt_rows).set_index("국가").style.format(
+                {"최신 실적(%)": "{:.1f}%", "최신 전망(%)": "{:.1f}%"}, na_rep="—"
+            ),
             width="stretch",
         )
         if len(debt_series) >= 2:
             # 연간 데이터라 두 나라의 마지막 관측 연도가 다를 수 있어(실측: 미국 2024년까지,
             # 한국 2023년까지) join="outer"로 겹쳐 그린다 — inner로 자르면 더 최신인 쪽의
-            # 마지막 해가 잘려나가 정보 손실이 생긴다.
+            # 마지막 해가 잘려나가 정보 손실이 생긴다. ⚠️ 이 차트는 실적만 겹쳐 그리는 기존
+            # 회귀 대상 차트로 그대로 둔다(값·동작 무변경) — 실적+전망 결합 뷰는 아래 별도로 둔다.
             st.line_chart(pd.concat(debt_series, axis=1, join="outer"))
         st.caption("두 시리즈 모두 이미 %로 계산된 IMF WEO 원값입니다 — 정규화하지 않았습니다.")
+
+        if debt_projection_series:
+            st.markdown("**실적 + IMF 전망**")
+            actual_projection_line_chart(
+                {label: (s, debt_projection_series.get(label)) for label, s in debt_series.items()}
+            )
+            boundary_notes = " · ".join(f"{label} {s.index[-1].year}년까지 실적" for label, s in debt_series.items())
+            st.caption(
+                f"⚠️ 나라마다 실적 경계연도가 다릅니다 — {boundary_notes}. ⚠️ 전망치는 확정치가 "
+                "아닙니다 — IMF 자체 추정이며 WEO 발표(연 2회) 때마다 수정될 수 있습니다."
+            )
 
 st.divider()
 st.header("지표 겹쳐보기")
