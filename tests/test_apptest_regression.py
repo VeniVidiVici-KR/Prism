@@ -569,7 +569,8 @@ def test_macro_indicator_kr_bond_catalog_buttons_and_fred_relabel():
 @pytest.mark.network
 def test_macro_indicator_kr_yield_curve_full_flow():
     """수익률곡선 스냅샷 — 6개 만기가 순서대로 나오고, 상식적인 범위(1~10%)이며, 우상향/역전
-    판정 캡션이 뜨는지 확인한다."""
+    판정이 뜨는지 확인한다. ⚠️ 카드 레이아웃 라운드(2026-08)에서 이 판정을 맨 아래 캡션에서
+    카드 상단 st.metric으로 옮겼다(값 자체는 동일, 표시 위치만 변경) — 의도된 변경."""
     at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
     at.run()
     country_radio = next(r for r in at.radio if r.label == "국가")
@@ -584,7 +585,7 @@ def test_macro_indicator_kr_yield_curve_full_flow():
     assert list(curve_df.index) == ["2Y", "3Y", "5Y", "10Y", "20Y", "30Y"]
     assert (curve_df["수익률(%)"] > 1.0).all() and (curve_df["수익률(%)"] < 10.0).all()
 
-    assert any("곡선 형태" in c.value for c in at.caption)
+    assert any(m.label == "곡선 형태 (10Y-2Y)" for m in at.metric)
     assert any("기준 시각" in c.value and "timestamp" in c.value for c in at.caption)
 
 
@@ -673,7 +674,7 @@ def test_macro_indicator_bond_issuance_full_flow():
     from unittest.mock import patch
 
     import valley.edgar as edgar_mod
-    from views.macro_indicator import BOND_ISSUANCE_UNIVERSE
+    from views.macro.credit_bonds import BOND_ISSUANCE_UNIVERSE
 
     calls: list[str] = []
     _orig = edgar_mod.get_filings_by_type

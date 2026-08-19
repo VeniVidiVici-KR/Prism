@@ -14,11 +14,16 @@ from pathlib import Path
 
 VIEWS_DIR = Path(__file__).resolve().parent.parent / "views"
 
+# ⚠️ 파일 분할 라운드(2026-08) — macro_indicator는 더 이상 단일 파일이 아니라 조립 파일 +
+# views/macro/ 아래 섹션 모듈들로 나뉜다. 조립 파일 하나만 스캔하면 섹션 모듈에만 있는 키
+# (예: macro_bond_ai_engine, macro_cpi_breakdown_mode 등)를 놓쳐 이 테스트의 원래 목적(페이지
+# 간 세션 키 충돌 검사)이 조용히 약해진다 — 그래서 macro_indicator는 파일 목록(list[Path])으로
+# 받아 폴더 전체를 훑는다. 다른 페이지는 여전히 단일 파일이라 Path 그대로 둔다.
 PAGE_FILES = {
     "stock_research": VIEWS_DIR / "stock_research.py",
     "screener": VIEWS_DIR / "screener.py",
     "comparison": VIEWS_DIR / "comparison.py",
-    "macro_indicator": VIEWS_DIR / "macro_indicator.py",
+    "macro_indicator": [VIEWS_DIR / "macro_indicator.py", *sorted((VIEWS_DIR / "macro").glob("*.py"))],
 }
 
 # st.session_state의 dict-like 메서드 — 키 이름이 아니라 메서드 호출이므로 제외한다.
@@ -30,8 +35,9 @@ _BRACKET_PATTERN = re.compile(r"""st\.session_state\[["']([a-zA-Z_][a-zA-Z0-9_]*
 _KEY_PARAM_PATTERN = re.compile(r'key=f?"([^"{]*)')
 
 
-def _extract_session_keys(path: Path) -> set[str]:
-    text = path.read_text(encoding="utf-8")
+def _extract_session_keys(path_or_paths: Path | list[Path]) -> set[str]:
+    paths = [path_or_paths] if isinstance(path_or_paths, Path) else path_or_paths
+    text = "\n".join(p.read_text(encoding="utf-8") for p in paths)
     keys: set[str] = set()
 
     for m in _ATTR_PATTERN.finditer(text):
@@ -52,8 +58,11 @@ def _extract_session_keys(path: Path) -> set[str]:
 
 def test_all_page_files_exist():
     """이 테스트가 조용히 0개 파일을 검사하고 통과하는 사고를 막는다."""
-    for name, path in PAGE_FILES.items():
-        assert path.exists(), f"{name} 페이지 파일을 찾을 수 없습니다: {path}"
+    for name, path_or_paths in PAGE_FILES.items():
+        paths = [path_or_paths] if isinstance(path_or_paths, Path) else path_or_paths
+        assert paths, f"{name}에 스캔할 파일이 하나도 없습니다(glob이 빈 목록을 반환했을 수 있음)."
+        for path in paths:
+            assert path.exists(), f"{name} 페이지 파일을 찾을 수 없습니다: {path}"
 
 
 def test_each_page_extracts_at_least_one_session_key():
