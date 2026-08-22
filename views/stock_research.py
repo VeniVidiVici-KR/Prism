@@ -1,7 +1,10 @@
-"""Stock Research — 종목 재무분석 + 간단 DCF 밸류에이션 + AI 해설."""
+"""Stock Research — 종목 재무분석 + 간단 DCF 밸류에이션 + AI 해설.
 
-import os
-from collections import Counter
+⚠️ 파일 분할 라운드(2026-08) — 상단부(시장 스냅샷~PER/PBR 밴드) 섹션 렌더 로직은 views/stock/
+아래로 옮겼다. 이 파일은 사이드바·게이팅(st.stop())·상단부 조립과, 아직 분할하지 않은
+하단부(간단 DCF~DART 원본 재무제표, 다음 라운드 범위)를 담당한다.
+"""
+
 from datetime import date
 
 import pandas as pd
@@ -9,24 +12,13 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from valley.ai_commentary import generate_commentary
-from valley.company_summary import CompanySummaryError
 from valley.dart import DartDataError
 from valley.data import TickerNotFoundError
-from valley.edgar import (
-    ALL_CATEGORIES,
-    CATEGORY_PRIMARY_FORM_TYPES,
-    EdgarDataError,
-    categorize_form,
-    describe_form_type,
-)
-from valley.edgar_summary import EdgarSummaryError
 from valley.formatting import format_money, format_multiple, format_percent
 from valley.krx import search_kr_stock_by_name
 from valley.llm import ENGINE_GEMINI, ENGINE_LABELS, ENGINE_SCHOOL, is_engine_available
-from valley.peers import ValuationDataError, build_valuation_table
+from valley.peers import ValuationDataError
 from valley.report import build_markdown_summary
-from valley.supply import SupplyDataError, summarize_net_trading
-from valley.toss import TossDataError
 from valley.valuation import (
     CoeSuggestionUnavailableError,
     FcffInputsUnavailableError,
@@ -46,48 +38,31 @@ from valley.valuation import (
     simplified_dcf,
     suggest_coe,
 )
-from views._charts import line_chart_with_markers
 from views._style import inject_navy_headings
 from views._cache import (
     get_company_snapshot,
     get_corp_code,
-    get_cik,
-    get_dart_disclosure_list,
     get_dart_financial_statements,
     get_fcff_inputs,
-    get_filings_by_type,
     get_financial_history,
     get_free_cash_flow_history,
-    get_credit_trades_history,
-    get_historical_per_pbr,
-    get_institution_breakdown_history,
-    get_investor_net_trading,
-    get_investor_trading_history,
     get_kr_ticker_directory,
     get_latest_free_cash_flow,
-    get_market_snapshot,
-    get_us_market_state,
-    get_peer_tickers,
-    get_recent_filings,
-    get_price_history,
-    get_quarterly_financial_history,
-    get_8k_filing_text,
-    summarize_8k_filing,
-    get_mda_section_text,
-    summarize_mda_section,
     get_roe_history,
     get_annual_dividend_history,
-    get_securities_lending_history,
-    get_short_selling_history,
-    get_valuation_snapshot,
     resolve_ticker,
-    summarize_company_overview,
 )
-
-PRICE_PERIOD_LABELS = {
-    "1mo": "1개월", "3mo": "3개월", "6mo": "6개월",
-    "1y": "1년", "3y": "3년", "5y": "5년", "max": "전체",
-}
+from views.stock import (
+    company_overview,
+    dart_disclosures,
+    edgar_disclosures,
+    financial_trend,
+    investor_flows,
+    market_snapshot,
+    price_trend,
+    risk_indicators,
+    valuation,
+)
 
 # ⚠️ sector 단위("Financial Services")는 너무 거칠다 — 실측 확인 결과 은행(JPM/BAC/KB금융/
 # 신한지주)·보험(삼성화재/삼성생명)뿐 아니라 결제 네트워크(V/MA, industry="Credit Services")
@@ -125,45 +100,9 @@ st.caption("종목 재무분석 + 간단 DCF 밸류에이션 + AI 해설 · 정�
 # 시장 스냅샷 — ⚠️ 이 프로젝트에서 유일하게 "버튼 클릭 없이" 페이지 진입만으로 자동 조회되는
 # 섹션이다(get_market_snapshot의 ttl=300초 캐싱으로 호출 부담을 억제). "열자마자 시장 상황
 # 파악"이 목적이라 종목을 조회하기 전/후 둘 다 항상 보이도록, 티커 확정 여부로 갈리는
-# st.stop() 게이트(아래 "왼쪽에서 티커를 입력하고..." 안내) 앞에 배치했다 — 그 게이트 뒤에
-# 두면 종목 조회 전에는 이 섹션 자체가 안 보이게 된다. st.expander로 접을 수 있게 하되
-# 기본은 펼쳐둔다(종목 분석 중에도 시장 상황이 유용하다는 판단).
-with st.expander("📊 시장 스냅샷 (KOSPI·S&P500·VIX·환율 등)", expanded=True):
-    try:
-        snapshot_rows = get_market_snapshot()
-    except Exception:
-        snapshot_rows = []
-
-    if not snapshot_rows:
-        st.caption("시장 스냅샷을 불러오지 못했습니다 (일시적 네트워크 문제일 수 있습니다).")
-    else:
-        _SNAPSHOT_COLS_PER_ROW = 5
-        for i in range(0, len(snapshot_rows), _SNAPSHOT_COLS_PER_ROW):
-            chunk = snapshot_rows[i : i + _SNAPSHOT_COLS_PER_ROW]
-            cols = st.columns(_SNAPSHOT_COLS_PER_ROW)
-            for col, row in zip(cols, chunk):
-                if row["mode"] == "bp":
-                    value_text = f"{row['value']:.2f}%"
-                    delta_text = f"{row['change']:+.1f}bp"
-                else:
-                    value_text = f"{row['value']:,.2f}"
-                    delta_text = f"{row['change']:+.2f}%"
-                # ⚠️ 한국 사용자 관례(상승 빨강/하락 파랑)와 Streamlit 기본값(상승 초록/하락
-                # 빨강)이 반대다. st.metric의 delta_color는 "normal"(초록/빨강)과
-                # "inverse"(빨강/초록) 둘 중에서만 고를 수 있어(파랑 자체는 지원하지 않음) 완전한
-                # 한국식 재현은 불가능하지만, 상승=빨강이 더 중요한 관례라 판단해 inverse를
-                # 택했다(하락이 초록으로 보이는 절충은 감수).
-                col.metric(row["name"], value_text, delta_text, delta_color="inverse")
-
-        market_state = get_us_market_state()
-        _MARKET_STATE_LABELS = {
-            "REGULAR": "개장 중", "PRE": "장 시작 전", "POST": "장 마감 후 시간외", "CLOSED": "마감",
-        }
-        state_text = _MARKET_STATE_LABELS.get(market_state, "확인 불가")
-        st.caption(
-            f"⚠️ 지연 시세(약 15~20분) · 실시간이 아닙니다 · 미국장 상태: {state_text} "
-            "(S&P500 기준 참고치, 한국장 상태는 별도 확인 필요)"
-        )
+# st.stop() 게이트(아래 "왼쪽에서 티커를 입력하고..." 안내) 앞에서 부른다 — 그 게이트 뒤에
+# 두면 종목 조회 전에는 이 섹션 자체가 안 보이게 된다.
+market_snapshot.render()
 
 with st.sidebar:
     st.header("조회 설정")
@@ -383,6 +322,12 @@ except TickerNotFoundError as e:
 except Exception as e:
     st.error(f"데이터 조회 중 오류가 발생했습니다: {e}")
     st.stop()
+# ⚠️ 파일 분할 라운드(2026-08) — currency는 원래 "1. 회사 기본정보" 블록 맨 앞(옛
+# company_overview 섹션)에서 계산됐지만, 아래로 분리된 거의 모든 섹션(주가·재무·공시·수급·
+# 리스크·밸류에이션)이 이 값을 인자로 받아 쓴다 — 특정 섹션 전용 값이 아니라 페이지 전역
+# 공유값이므로 게이팅 블록으로 끌어올렸다(값 자체는 snapshot["currency"] 그대로, 계산 위치만
+# 이동).
+currency = snapshot["currency"]
 
 # 2단계: 재무제표(손익계산서) 조회. "yfinance 재무 완전 실패"는 이 함수의
 # TickerNotFoundError로 엄격히 정의한다 — 이때만 페이지를 멈추지 않고 DART 폴백으로 넘긴다.
@@ -423,748 +368,32 @@ if not yfinance_financials_failed:
         st.error(f"데이터 조회 중 오류가 발생했습니다: {e}")
         st.stop()
 
-# 1. 회사 기본정보
-st.subheader(f"{snapshot['name']} ({snapshot['ticker']})")
-col1, col2, col3, col4 = st.columns(4)
-currency = snapshot["currency"]
-col1.metric("현재가", format_money(snapshot["price"], currency))
-col2.metric("섹터", snapshot["sector"])
-col3.metric("산업", snapshot["industry"])
-market_cap = snapshot.get("market_cap")
-col4.metric("시가총액", format_money(market_cap, currency) if market_cap else "N/A")
-
-# 1-1. 회사 개요 — 미국 종목 전용(한국은 DART 사업보고서 본문 파싱이 필요해 다음 라운드 범위).
-# ⚠️ get_company_snapshot이 이미 받아온 info를 build_snapshot에서 그대로 확장한 필드만 쓴다
-# (.info 추가 호출 없음). 섹터/산업은 위에서 이미 표시했으니 여기서 반복하지 않는다.
-if currency != "KRW":
-    overview_fields = []
-    if snapshot.get("employees"):
-        overview_fields.append(("직원 수", f"{snapshot['employees']:,}명"))
-    location_parts = [p for p in (snapshot.get("city"), snapshot.get("state"), snapshot.get("country")) if p]
-    if location_parts:
-        overview_fields.append(("본사", ", ".join(location_parts)))
-    if snapshot.get("website"):
-        overview_fields.append(("웹사이트", snapshot["website"]))
-
-    business_summary = snapshot.get("business_summary")
-
-    # 필드가 전부 없는 종목(예: 상장폐지·데이터 미제공 소형주)은 섹션 자체를 띄우지 않는다 —
-    # 있는 것만 개별 표시하되, 아예 아무것도 없으면 빈 subheader만 남는 걸 피한다.
-    if overview_fields or business_summary:
-        st.subheader("회사 개요")
-        if overview_fields:
-            cols = st.columns(len(overview_fields))
-            for col, (label, value) in zip(cols, overview_fields):
-                col.metric(label, value)
-
-        if business_summary:
-            with st.expander("사업 개요 원문 보기 (영문)"):
-                st.write(business_summary)
-
-            st.caption(
-                f"🤖 회사 개요 한국어 요약({ENGINE_LABELS[selected_engine]}) — 버튼을 눌러야 생성됩니다 "
-                "(자동 요약 없음)."
-            )
-            if "sr_company_overview_summaries" not in st.session_state:
-                st.session_state.sr_company_overview_summaries = {}
-            # ⚠️ (ticker, engine) 조합으로 캐시 키를 잡는다 — 8-K 요약과 동일한 이유로 engine을
-            # 빠뜨리면 엔진을 바꿔도 이전 엔진 결과가 그대로 남아있는 것처럼 보이는 사고가 난다.
-            overview_summary_key = (resolved_ticker, selected_engine)
-            stored_overview_summary = st.session_state.sr_company_overview_summaries.get(overview_summary_key)
-            if stored_overview_summary is None:
-                if st.button("한국어로 요약", key=f"sr_company_overview_summarize_btn_{resolved_ticker}_{selected_engine}"):
-                    with st.spinner(f"{ENGINE_LABELS[selected_engine]}로 회사 개요를 요약하는 중..."):
-                        try:
-                            summary_text = summarize_company_overview(
-                                snapshot["name"], business_summary, engine=selected_engine,
-                            )
-                        except CompanySummaryError as e:
-                            st.session_state.sr_company_overview_summaries[overview_summary_key] = {"error": str(e)}
-                        else:
-                            st.session_state.sr_company_overview_summaries[overview_summary_key] = {
-                                "summary": summary_text
-                            }
-                    # 8-K 요약과 동일한 이유(방금 저장한 결과를 이 run 안에서 바로 보여주려면 재실행 필요).
-                    st.rerun()
-            elif "error" in stored_overview_summary:
-                st.error(f"요약 생성에 실패했습니다: {stored_overview_summary['error']}")
-            else:
-                st.markdown(f"**🤖 AI 생성 요약 · {ENGINE_LABELS[selected_engine]}**")
-                st.markdown(stored_overview_summary["summary"])
-        else:
-            st.caption("이 종목은 사업 개요 원문이 제공되지 않아 한국어 요약을 만들 수 없습니다.")
-
-        st.caption(
-            "💡 세그먼트별 매출 구조(제품·서비스별 매출 비중)는 아래 '최근 공시 (SEC EDGAR)'의 "
-            "10-K MD&A 요약에서 확인할 수 있습니다."
-        )
+# 1. 회사 기본정보 + 회사 개요
+company_overview.render(snapshot, currency, resolved_ticker, selected_engine)
 
 # 2. 주가 추이
-st.subheader("주가 추이")
-price_period = st.radio(
-    "기간", list(PRICE_PERIOD_LABELS.values()), index=3, horizontal=True, label_visibility="collapsed"
-)
-selected_period = next(k for k, v in PRICE_PERIOD_LABELS.items() if v == price_period)
-try:
-    price_history = get_price_history(resolved_ticker, selected_period)
-except (TickerNotFoundError, ValueError) as e:
-    st.warning(str(e))
-else:
-    st.caption(f"단위: {currency} · 배당/분할 조정 종가")
-    st.line_chart(price_history)
+price_trend.render(resolved_ticker, currency)
 
 # 3. 재무 추이
-st.subheader("재무 추이")
+financial_trend.render(resolved_ticker, currency, financial_history, yfinance_financials_failed)
 
-dart_fallback_used = False  # 아래 파일럿 섹션에서 중복 표시를 피하기 위해 기억해둔다.
+# 3-1. 최근 공시 (DART) — yfinance 재무 성공/실패와 무관하게 한국 종목이면 항상 표시하는 상시 섹션.
+dart_disclosures.render(resolved_ticker, currency)
 
-if yfinance_financials_failed:
-    st.warning("yfinance에서 이 종목의 재무제표를 가져오지 못했습니다.")
-    if currency != "KRW":
-        st.info("DART는 한국 상장기업 재무제표만 제공해 이 종목(한국 외)은 대체 표시가 불가합니다.")
-    else:
-        dart_stock_code = resolved_ticker.split(".")[0]
-        try:
-            dart_corp_code = get_corp_code(dart_stock_code)
-            dart_fallback_data = get_dart_financial_statements(dart_corp_code)
-        except DartDataError as e:
-            st.error(f"DART 대체 조회도 실패했습니다: {e}")
-        else:
-            dart_fallback_used = True
-            fs_label = "연결재무제표(CFS)" if dart_fallback_data["fs_div_used"] == "CFS" else "별도재무제표(OFS)"
-            st.info(f"📄 yfinance 데이터 없음 → DART 원본 재무제표({fs_label})로 대체 표시합니다.")
+# 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용.
+edgar_disclosures.render(resolved_ticker, currency, snapshot, selected_engine)
 
-            years_sorted = sorted(dart_fallback_data["by_year"].keys())
-            fallback_rows = {}
-            for y in years_sorted:
-                acc = dart_fallback_data["by_year"][y]
-                fallback_rows[str(y)] = {"매출": acc.get("매출액"), "영업이익": acc.get("영업이익"), "순이익": acc.get("당기순이익")}
-            fallback_df = pd.DataFrame(fallback_rows).T
-            fallback_df["영업이익률"] = fallback_df["영업이익"] / fallback_df["매출"]
-            fallback_df["순이익률"] = fallback_df["순이익"] / fallback_df["매출"]
+# 3-2. 투자자별 수급 (KRX/토스) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
+# 한국 종목이면 항상 표시하는 상시 섹션이다.
+investor_flows.render(resolved_ticker, currency)
 
-            st.caption(f"단위: {currency} (DART 원본, 연간)")
-            display_fallback = fallback_df.copy()
-            for col in ["매출", "영업이익", "순이익"]:
-                display_fallback[col] = display_fallback[col].map(lambda v: format_money(v, currency) if pd.notna(v) else "N/A")
-            for col in ["영업이익률", "순이익률"]:
-                display_fallback[col] = display_fallback[col].map(lambda v: f"{v * 100:.1f}%" if pd.notna(v) else "N/A")
-            st.dataframe(display_fallback, width="stretch")
-            # 매출과 순이익을 한 축에 겹치면 매출≫순이익인 종목은 순이익선이 바닥에 깔려 안
-            # 보인다 — 각자 스케일에 맞는 별도 차트로 분리한다(이중축은 새 차트 로직이라
-            # 다음 과제로 남기고, 이번엔 기존 line_chart_with_markers를 그대로 재사용).
-            rev_col, ni_col = st.columns(2)
-            with rev_col:
-                st.caption("매출")
-                line_chart_with_markers(fallback_df[["매출"]], height=240)
-            with ni_col:
-                st.caption("순이익")
-                line_chart_with_markers(fallback_df[["순이익"]], height=240)
+# 3-3. 종목 리스크 지표 (공매도·신용·대차) — 토스증권 API 전용, 국내 종목만.
+risk_indicators.render(resolved_ticker, currency)
 
-            matched = dart_fallback_data["matched_account_names"]
-            matched_desc = ", ".join(f"{label}→'{name}'" for label, name in matched.items() if name)
-            if matched_desc:
-                st.caption(f"매칭된 DART 계정명: {matched_desc}")
-else:
-    period_view = st.radio("기간", ["연간", "분기별"], horizontal=True, label_visibility="collapsed")
-
-    if period_view == "분기별":
-        try:
-            history_to_show = get_quarterly_financial_history(resolved_ticker)
-        except TickerNotFoundError as e:
-            st.warning(str(e))
-            history_to_show = None
-        else:
-            st.caption("최근 4~5개 분기 (yfinance 무료 API 제공 범위 한계)")
-    else:
-        history_to_show = financial_history
-
-    if history_to_show is not None:
-        st.caption(f"단위: {currency}")
-        display_history = history_to_show.copy()
-        for col in ["매출", "영업이익", "순이익"]:
-            display_history[col] = display_history[col].map(lambda v: format_money(v, currency) if pd.notna(v) else "N/A")
-        for col in ["영업이익률", "순이익률"]:
-            display_history[col] = display_history[col].map(lambda v: f"{v * 100:.1f}%" if pd.notna(v) else "N/A")
-        st.dataframe(display_history, width="stretch")
-        # 매출과 순이익을 한 축에 겹치면 매출≫순이익인 종목은 순이익선이 바닥에 깔려 안
-        # 보인다 — 각자 스케일에 맞는 별도 차트로 분리한다(이중축은 새 차트 로직이라
-        # 다음 과제로 남기고, 이번엔 기존 line_chart_with_markers를 그대로 재사용).
-        rev_col, ni_col = st.columns(2)
-        with rev_col:
-            st.caption("매출")
-            line_chart_with_markers(history_to_show[["매출"]], height=240)
-        with ni_col:
-            st.caption("순이익")
-            line_chart_with_markers(history_to_show[["순이익"]], height=240)
-
-# 3-1. 공시 목록 (DART) — yfinance 재무 성공/실패와 무관하게 한국 종목이면 항상 표시하는
-# 상시 섹션이다 (위 재무 추이의 DART 폴백과는 성격이 다름 — 폴백이 아니라 항상 노출).
-st.subheader("최근 공시 (DART)")
-if currency != "KRW":
-    # ⚠️ 기존 DART 섹션 로직(else 분기)은 그대로 두고, 이 안내 문구만 최소로 손본다 — 바로
-    # 아래에 EDGAR 섹션이 실제로 추가됐는데 "추후 지원 예정"이라는 예전 문구를 그대로 두면
-    # 방금 만든 기능과 바로 모순되는 문구가 남는다(정리 라운드 아님, 신규 기능 추가에 딸린
-    # 최소 문구 수정으로 한정).
-    st.info("현재 DART는 한국 상장기업 공시만 지원합니다. 미국 종목은 아래 'SEC EDGAR' 섹션을 참고하세요.")
-else:
-    disclosure_period_labels = {"1개월": 1, "3개월": 3, "6개월": 6, "1년": 12}
-    disclosure_period = st.radio(
-        "조회 기간", list(disclosure_period_labels.keys()), index=2, horizontal=True, key="sr_disclosure_period"
-    )
-    keyword_filter = st.text_input(
-        "보고서명 키워드 필터 (선택)", value="", key="sr_disclosure_keyword"
-    ).strip()
-
-    disclosure_stock_code = resolved_ticker.split(".")[0]
-    try:
-        disclosure_corp_code = get_corp_code(disclosure_stock_code)
-        disclosures = get_dart_disclosure_list(
-            disclosure_corp_code, months=disclosure_period_labels[disclosure_period]
-        )
-    except DartDataError as e:
-        st.warning(f"공시 목록을 가져오지 못했습니다: {e}")
-    else:
-        if keyword_filter:
-            disclosures = [d for d in disclosures if keyword_filter in d["report_nm"]]
-
-        if not disclosures:
-            no_result_msg = f"최근 {disclosure_period}간 공시가 없습니다."
-            if keyword_filter:
-                no_result_msg += f" (키워드 '{keyword_filter}' 필터 적용 중)"
-            st.info(no_result_msg)
-        else:
-            disclosure_df = pd.DataFrame(
-                [
-                    {
-                        "접수일": f"{d['rcept_dt'][:4]}-{d['rcept_dt'][4:6]}-{d['rcept_dt'][6:]}"
-                        if d["rcept_dt"]
-                        else "",
-                        "보고서명": d["report_nm"],
-                        "제출인": d["flr_nm"],
-                        "원문": d["url"],
-                    }
-                    for d in disclosures
-                ]
-            )
-            st.dataframe(
-                disclosure_df,
-                width="stretch",
-                hide_index=True,
-                column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
-            )
-            st.caption(f"최근 {disclosure_period} 이내 공시 {len(disclosures)}건 (최신순, 최대 30건 조회)")
-
-# 3-1-2. 최근 공시 (SEC EDGAR) — 위 DART 공시와 대칭 위치, 미국(비한국) 종목 전용 파일럿.
-# ⚠️ 이번 라운드에서 8-K 본문 AI 요약을 추가했다 — 10-K/10-Q 요약은 여전히 다음 라운드 범위.
-st.subheader("최근 공시 (SEC EDGAR)")
-if currency == "KRW":
-    st.info("한국 종목은 위 DART 공시를 이용하세요. SEC EDGAR는 미국 상장기업 전용입니다.")
-else:
-    try:
-        edgar_cik = get_cik(resolved_ticker)
-        # ⚠️ 30건이면 대형주는 Form 4(임원 지분변동) 홍수에 10-K/10-Q가 파묻혀 안 보일 수
-        # 있어(실측: AAPL 30건 중 10-K 0건, 100건 중에서야 1건 등장) 100건으로 늘렸다.
-        # SEC submissions API의 filings.recent는 한 응답에 최대 1000건까지 오므로(실측 확인),
-        # 추가 호출 없이 같은 캐시된 응답 안에서 더 넓은 범위를 확보한다.
-        edgar_filings = get_recent_filings(edgar_cik, limit=100)
-    except EdgarDataError as e:
-        st.warning(f"SEC EDGAR 공시 목록을 가져오지 못했습니다: {e}")
-    else:
-        if not edgar_filings:
-            st.info("최근 공시가 없습니다.")
-        else:
-            # 세션 키(sr_ 접두어)로 관리해 다른 위젯 조작으로 재실행돼도 필터 선택이 유지되게
-            # 한다. "전체"를 선택하면 범주 구분 없이 다 보여준다(범주 설계에서 빠진 form도
-            # 항상 "전체"로는 볼 수 있어야 한다는 요구사항).
-            if "sr_edgar_form_categories" not in st.session_state:
-                st.session_state.sr_edgar_form_categories = ["실적·정기보고", "중요 사건"]
-            category_options = ALL_CATEGORIES + ["전체"]
-            selected_categories = st.multiselect(
-                "공시 유형", category_options, key="sr_edgar_form_categories",
-                help="기본은 실적·정기보고(10-K/10-Q)와 중요 사건(8-K) 위주입니다. "
-                "Form 4 등 임원 지분변동이 많은 대형주는 기본 필터에서 걸러집니다.",
-            )
-
-            counts_by_category = Counter(categorize_form(f["form"]) for f in edgar_filings)
-            st.caption(
-                f"최근 {len(edgar_filings)}건 중 범주별 건수: "
-                + " · ".join(f"{cat} {counts_by_category.get(cat, 0)}건" for cat in ALL_CATEGORIES)
-            )
-
-            if "전체" in selected_categories:
-                filtered_filings = edgar_filings
-            else:
-                # 선택이 비어 있으면(체크 다 해제) 의도적으로 빈 결과로 취급한다 — 아무 범주도
-                # 안 골랐는데 조용히 전체를 보여주면 "필터가 걸리긴 한 건지" 혼란스럽다. 아래
-                # 0건 안내가 "전체"를 켜라고 명확히 알려준다.
-                filtered_filings = [
-                    f for f in edgar_filings if categorize_form(f["form"]) in selected_categories
-                ]
-
-            if "sr_edgar_8k_summaries" not in st.session_state:
-                st.session_state.sr_edgar_8k_summaries = {}
-            # 10-K/10-Q MD&A용 세션 키 — 8-K와 완전히 분리된 별도 딕셔너리(sr_ 접두어 준수).
-            # sr_edgar_mda_extracted: accession_number -> 추출된 MD&A 텍스트(엔진 무관, 무료).
-            # sr_edgar_mda_summaries: (accession_number, engine) -> 최종 요약(유료, 엔진별 분리).
-            if "sr_edgar_mda_extracted" not in st.session_state:
-                st.session_state.sr_edgar_mda_extracted = {}
-            if "sr_edgar_mda_summaries" not in st.session_state:
-                st.session_state.sr_edgar_mda_summaries = {}
-
-            def _render_edgar_table(filings: list[dict]) -> None:
-                edgar_df = pd.DataFrame(
-                    [
-                        {
-                            "접수일": f["filing_date"],
-                            "유형": describe_form_type(f["form"]),
-                            "설명": f["description"] or "-",
-                            "원문": f["url"],
-                        }
-                        for f in filings
-                    ]
-                )
-                st.dataframe(
-                    edgar_df,
-                    width="stretch",
-                    hide_index=True,
-                    column_config={"원문": st.column_config.LinkColumn("원문", display_text="열기")},
-                )
-
-                # 8-K 본문 AI 요약 — 이번 라운드는 8-K만(10-K/10-Q는 길이·비용 설계가 달라
-                # 다음 라운드). ⚠️ 비용 통제 핵심: 목록에 뜬다고 자동으로 요약하지 않는다 —
-                # 반드시 사용자가 건별로 "AI 요약 생성하기"를 눌러야만 호출된다(일괄 요약
-                # 버튼 없음). accession_number가 없는 필링(이론상 없어야 함)은 건너뛴다.
-                eight_k_filings = [f for f in filings if f["form"] == "8-K" and f.get("accession_number")]
-                if eight_k_filings:
-                    st.caption(
-                        f"🤖 8-K(수시공시) 본문 AI 요약({ENGINE_LABELS[selected_engine]}) — 건별로 버튼을 "
-                        "눌러야 생성됩니다(자동/일괄 요약 없음)."
-                    )
-                    for f in eight_k_filings:
-                        accession_number = f["accession_number"]
-                        # ⚠️ (accession_number, engine) 조합으로 키를 잡는다 — accession_number만
-                        # 쓰면 학교 게이트웨이로 요약한 뒤 사이드바에서 Gemini로 바꿔도 이전(학교)
-                        # 결과가 그대로 남아있는 것처럼 보이는 사고가 난다. 엔진별로 독립 저장하면
-                        # 서로 덮어쓰지 않고, 엔진을 되돌렸을 때도 그 엔진의 기존 결과가 재호출 없이
-                        # 바로 나온다.
-                        summary_key = (accession_number, selected_engine)
-                        with st.expander(f"{f['filing_date']} · 8-K 요약"):
-                            stored_summary = st.session_state.sr_edgar_8k_summaries.get(summary_key)
-                            if stored_summary is None:
-                                if st.button(
-                                    "AI 요약 생성하기",
-                                    key=f"sr_edgar_8k_summarize_btn_{accession_number}_{selected_engine}",
-                                ):
-                                    with st.spinner(f"공시 원문을 가져와 {ENGINE_LABELS[selected_engine]}로 요약하는 중..."):
-                                        try:
-                                            doc = get_8k_filing_text(edgar_cik, accession_number)
-                                            summary_text = summarize_8k_filing(
-                                                snapshot["name"], f["form"], f["filing_date"],
-                                                doc["text"], doc["truncated"], engine=selected_engine,
-                                            )
-                                        except (EdgarDataError, EdgarSummaryError) as e:
-                                            st.session_state.sr_edgar_8k_summaries[summary_key] = {
-                                                "error": str(e)
-                                            }
-                                        else:
-                                            st.session_state.sr_edgar_8k_summaries[summary_key] = {
-                                                "summary": summary_text,
-                                                "truncated": doc["truncated"],
-                                                "used_exhibit": doc["used_exhibit"],
-                                            }
-                                    # 버튼 클릭 처리 직후엔 아직 이 run 안에서 else 분기(표시)가
-                                    # 실행되지 않으므로, 재실행해 방금 저장한 결과를 바로 보여준다.
-                                    st.rerun()
-                            elif "error" in stored_summary:
-                                st.error(f"요약 생성에 실패했습니다: {stored_summary['error']}")
-                            else:
-                                st.markdown(f"**🤖 AI 생성 요약 · {ENGINE_LABELS[selected_engine]}**")
-                                st.markdown(stored_summary["summary"])
-                                notes = []
-                                if stored_summary["used_exhibit"]:
-                                    notes.append("첨부(EX-99.1) 포함")
-                                if stored_summary["truncated"]:
-                                    notes.append("⚠️ 문서가 길어 앞부분만 요약했습니다")
-                                if notes:
-                                    st.caption(" · ".join(notes))
-
-                # 10-K/10-Q MD&A(경영진의 논의 및 분석) 요약 — 8-K와 별도 경로다. 문서
-                # 전체(수백 페이지)를 넣을 수 없어 MD&A 섹션만 추출하고, 8-K보다 비용이
-                # 훨씬 커서(실측: AAPL 10-K 1.8만자~MSFT 10-Q 5.8만자, 8-K 대비 3~10배 토큰)
-                # "추출 → 크기 확인 → 사용자가 진행 확정" 2단계로 나눈다(추출 자체는 SEC
-                # 문서 조회일 뿐 LLM 호출이 아니라 무료 — 크레딧은 진행 확정 후에만 든다).
-                # ⚠️ 10-K/A, 10-Q/A(정정본)는 지원하지 않는다 — 실측 결과 TSLA의 최근
-                # 10-K/A는 Part III(임원보수 등) 정정만 담아 Item 7(MD&A) 자체가 없었다.
-                mda_filings = [
-                    f for f in filings if f["form"] in ("10-K", "10-Q") and f.get("accession_number")
-                ]
-                if mda_filings:
-                    st.caption(
-                        f"🤖 10-K/10-Q MD&A(경영진의 논의 및 분석) AI 요약({ENGINE_LABELS[selected_engine]}) "
-                        "— 건별로 버튼을 눌러야 생성됩니다(자동/일괄 요약 없음). 문서가 커서 8-K보다 "
-                        "비용이 훨씬 큽니다."
-                    )
-                    for f in mda_filings:
-                        accession_number = f["accession_number"]
-                        form = f["form"]
-                        # 추출(무료, SEC 문서 조회일 뿐)은 엔진과 무관해 accession_number만으로
-                        # 캐시하고, 최종 요약(유료, LLM 호출)만 (accession_number, engine)로
-                        # 분리한다 — 8-K 세션 키(sr_edgar_8k_summaries)와도 완전히 별개 딕셔너리라
-                        # 서로 덮어쓸 일이 없다.
-                        mda_summary_key = (accession_number, selected_engine)
-                        with st.expander(f"{f['filing_date']} · {form} MD&A 요약"):
-                            stored_mda_summary = st.session_state.sr_edgar_mda_summaries.get(mda_summary_key)
-                            if stored_mda_summary is not None:
-                                if "error" in stored_mda_summary:
-                                    st.error(f"요약 생성에 실패했습니다: {stored_mda_summary['error']}")
-                                else:
-                                    st.markdown(f"**🤖 AI 생성 요약 · {ENGINE_LABELS[selected_engine]} · Item {'7' if form == '10-K' else '2'} MD&A 기준**")
-                                    st.markdown(stored_mda_summary["summary"])
-                                    if stored_mda_summary["truncated"]:
-                                        st.caption("⚠️ MD&A 섹션 자체가 길어 앞부분만 요약했습니다.")
-                            else:
-                                extracted = st.session_state.sr_edgar_mda_extracted.get(accession_number)
-                                if extracted is None:
-                                    if st.button(
-                                        "MD&A 추출 (크기 확인)",
-                                        key=f"sr_edgar_mda_extract_btn_{accession_number}",
-                                        help="아직 AI를 호출하지 않습니다 — SEC 원문에서 MD&A 섹션만 추출해 크기를 먼저 보여줍니다.",
-                                    ):
-                                        with st.spinner("MD&A 섹션을 추출하는 중..."):
-                                            try:
-                                                mda_doc = get_mda_section_text(edgar_cik, accession_number, form)
-                                            except EdgarDataError as e:
-                                                st.session_state.sr_edgar_mda_extracted[accession_number] = {
-                                                    "error": str(e)
-                                                }
-                                            else:
-                                                st.session_state.sr_edgar_mda_extracted[accession_number] = {
-                                                    "text": mda_doc["text"],
-                                                    "truncated": mda_doc["truncated"],
-                                                }
-                                        st.rerun()
-                                elif "error" in extracted:
-                                    st.error(f"MD&A 추출에 실패했습니다: {extracted['error']}")
-                                else:
-                                    char_count = len(extracted["text"])
-                                    approx_tokens = char_count // 4
-                                    st.info(
-                                        f"추출된 MD&A 약 {char_count:,}자(대략 {approx_tokens:,} 토큰 추정) — 요약하시겠습니까?"
-                                    )
-                                    if extracted["truncated"]:
-                                        st.caption("⚠️ MD&A 섹션 자체가 길어 앞부분만 추출했습니다.")
-                                    if selected_engine == ENGINE_SCHOOL:
-                                        st.caption(
-                                            "💡 긴 문서라 학교 게이트웨이 크레딧 소모가 큽니다. Gemini 엔진 "
-                                            "사용을 고려해보세요(사이드바에서 전환 — 자동으로 바뀌지는 않습니다)."
-                                        )
-                                    if st.button(
-                                        f"이 크기로 {ENGINE_LABELS[selected_engine]} 요약 진행",
-                                        key=f"sr_edgar_mda_summarize_btn_{accession_number}_{selected_engine}",
-                                    ):
-                                        with st.spinner(f"{ENGINE_LABELS[selected_engine]}로 MD&A를 요약하는 중..."):
-                                            try:
-                                                mda_summary_text = summarize_mda_section(
-                                                    snapshot["name"], form, f["filing_date"],
-                                                    extracted["text"], extracted["truncated"], engine=selected_engine,
-                                                )
-                                            except EdgarSummaryError as e:
-                                                st.session_state.sr_edgar_mda_summaries[mda_summary_key] = {
-                                                    "error": str(e)
-                                                }
-                                            else:
-                                                st.session_state.sr_edgar_mda_summaries[mda_summary_key] = {
-                                                    "summary": mda_summary_text,
-                                                    "truncated": extracted["truncated"],
-                                                }
-                                        st.rerun()
-
-            if not filtered_filings:
-                st.info(f"선택한 유형의 공시가 최근 {len(edgar_filings)}건 내에 없습니다. '전체'를 선택하면 모두 볼 수 있습니다.")
-
-                # ⚠️ "최근 N건에서 거르기"의 근본 한계(JPM처럼 424B2 발행량이 압도적인 종목은
-                # 100건, 심지어 1000건 안에도 10-K/10-Q가 없을 수 있음, 실측 확인)를 여기서
-                # 해결한다 — 매 로드마다 자동 조회하면 호출이 늘어나므로, 사용자가 필요할 때만
-                # 누르는 버튼으로 한정한다(평소엔 기존 흐름 그대로 빠르게).
-                direct_fetchable = [c for c in selected_categories if c in CATEGORY_PRIMARY_FORM_TYPES]
-                if direct_fetchable:
-                    if st.button("선택한 유형을 SEC에서 직접 조회하기", key="sr_edgar_direct_fetch_btn"):
-                        direct_results = []
-                        for cat in direct_fetchable:
-                            for form_type in CATEGORY_PRIMARY_FORM_TYPES[cat]:
-                                try:
-                                    direct_results.extend(get_filings_by_type(edgar_cik, form_type, limit=10))
-                                except EdgarDataError as e:
-                                    st.warning(f"{form_type} 직접 조회에 실패했습니다: {e}")
-                        direct_results.sort(key=lambda f: f["filing_date"], reverse=True)
-                        # 티커·범주 조합까지 함께 저장해, 다른 종목을 조회하거나 필터를 바꾸면
-                        # 이전 결과가 잘못 이어서 보이지 않도록 한다(다음 rerun에서 이 조합이
-                        # 안 맞으면 아래에서 자동으로 무시됨).
-                        st.session_state.sr_edgar_direct_results = {
-                            "ticker": resolved_ticker,
-                            "categories": tuple(sorted(direct_fetchable)),
-                            "filings": direct_results,
-                        }
-
-                    stored = st.session_state.get("sr_edgar_direct_results")
-                    if (
-                        stored
-                        and stored["ticker"] == resolved_ticker
-                        and stored["categories"] == tuple(sorted(direct_fetchable))
-                    ):
-                        if not stored["filings"]:
-                            st.info("직접 조회로도 해당 유형의 공시를 찾지 못했습니다.")
-                        else:
-                            _render_edgar_table(stored["filings"])
-                            st.caption(
-                                f"SEC 직접 조회 결과 {len(stored['filings'])}건 "
-                                f"(선택 유형별 최신 10건까지, 최신순) · 최근 N건 필터가 아닌 유형별 직접 조회"
-                            )
-            else:
-                _render_edgar_table(filtered_filings)
-                st.caption(
-                    f"{len(filtered_filings)}건 표시 (최근 {len(edgar_filings)}건 중 선택 유형 필터 적용, 최신순) · 출처: SEC EDGAR"
-                )
-            st.caption("8-K는 행별로 AI 요약을 볼 수 있습니다. 10-K/10-Q 본문 요약은 다음 라운드 범위입니다.")
-
-# 3-2. 투자자별 수급 (KRX/pykrx) — 공시 섹션과 마찬가지로 yfinance 성공/실패와 무관하게
-# 한국 종목이면 항상 표시하는 상시 섹션이다. 개별종목 투자자별 매매동향은 KRX 로그인
-# (KRX_ID/KRX_PW)이 있어야 조회되므로, 로그인 정보가 없거나 KRX가 막으면 이 섹션만
-# 경고로 안내하고 나머지 섹션(재무/DCF/Peer/공시)은 정상 동작한다.
-st.subheader("투자자별 수급 (외국인·기관·개인)")
-if currency != "KRW":
-    st.info("현재는 한국 상장기업 수급만 제공합니다. 해외 종목은 투자자별 매매동향 공개 데이터가 없습니다.")
-else:
-    supply_stock_code = resolved_ticker.split(".")[0]
-    # ⚠️ 토스증권 파일럿(2026-08 라운드) — TOSS_CLIENT_ID/SECRET이 없으면 선택지 자체를 감춰
-    # 기존 KRX 전용 동작을 그대로 유지한다(다른 키 게이팅 섹션과 동일 패턴). 두 소스는 단위가
-    # 다르다(KRX=거래대금 원화, 토스=거래량 주식 수 — 실측 확인, valley/toss.py 모듈 docstring
-    # 참고) — 그래서 한 차트에 섞지 않고 라디오로 완전히 분리된 뷰를 그린다.
-    toss_available = bool(os.environ.get("TOSS_CLIENT_ID") and os.environ.get("TOSS_CLIENT_SECRET"))
-
-    supply_source = "KRX (거래대금)"
-    if toss_available:
-        supply_source = st.radio(
-            "데이터 소스",
-            ["KRX (거래대금)", "토스증권 (거래량, 파일럿)"],
-            horizontal=True,
-            key="sr_supply_source",
-            help="⚠️ 두 소스는 단위가 다릅니다(KRX=원화 거래대금, 토스=주식 수) — 값을 직접 비교하지 마세요.",
-        )
-
-    if supply_source == "KRX (거래대금)":
-        try:
-            daily_supply = get_investor_net_trading(supply_stock_code, days=20)
-        except SupplyDataError as e:
-            st.warning(f"투자자별 수급 조회에 실패했습니다: {e}")
-        else:
-            supply_summary = summarize_net_trading(daily_supply)
-            st.caption(f"최근 {len(daily_supply)}영업일 누적 순매수 (단위: 억원 · +매수우위 / -매도우위)")
-            s1, s2, s3 = st.columns(3)
-            s1.metric("외국인", f"{supply_summary['외국인'] / 1e8:+,.0f}억원")
-            s2.metric("기관", f"{supply_summary['기관'] / 1e8:+,.0f}억원")
-            s3.metric("개인", f"{supply_summary['개인'] / 1e8:+,.0f}억원")
-
-            st.caption(f"일별 순매수 추이 (최근 {len(daily_supply)}영업일, 단위: 억원)")
-            line_chart_with_markers((daily_supply / 1e8).rename(index=lambda d: d.strftime("%m-%d")))
-    else:
-        try:
-            toss_supply = get_investor_trading_history(supply_stock_code, days=20)
-        except TossDataError as e:
-            st.warning(f"토스증권 수급 조회에 실패했습니다: {e}")
-        else:
-            toss_summary = toss_supply.sum()
-            st.caption(
-                f"최근 {len(toss_supply)}영업일 누적 순매수 (단위: 주 · +매수우위 / -매도우위) · "
-                "⚠️ 거래량(주식 수) 기준 — 위 KRX(거래대금)와 단위가 달라 직접 비교할 수 없습니다."
-            )
-            t1, t2, t3 = st.columns(3)
-            t1.metric("외국인", f"{toss_summary['외국인']:+,.0f}주")
-            t2.metric("기관", f"{toss_summary['기관']:+,.0f}주")
-            t3.metric("개인", f"{toss_summary['개인']:+,.0f}주")
-
-            st.caption(f"일별 순매수 추이 (최근 {len(toss_supply)}영업일, 단위: 주)")
-            line_chart_with_markers(toss_supply.rename(index=lambda d: d.strftime("%m-%d")))
-
-            try:
-                institution_breakdown = get_institution_breakdown_history(supply_stock_code, days=20)
-            except TossDataError as e:
-                st.caption(f"기관 세부분류 조회에 실패했습니다: {e}")
-            else:
-                st.caption("기관 세부분류 (금융투자·보험·투신·사모펀드·은행·기타금융기관·연기금, 단위: 주)")
-                st.dataframe(
-                    institution_breakdown.rename(index=lambda d: d.strftime("%m-%d")).style.format("{:+,.0f}"),
-                    width="stretch",
-                )
-
-            st.caption(
-                "출처: 토스증권 Open API(파일럿) · 조회 당일은 개인 투자자 수치가 아직 집계되지 "
-                "않아 비어 있을 수 있습니다."
-            )
-
-# 3-3. 종목 리스크 지표 (공매도·신용·대차) — 토스증권 API 전용, 국내 종목만. ⚠️ 세 지표는
-# 서로 다른 것을 보여준다(공매도=하락 베팅 직접 지표, 신용융자=개인 레버리지, 대차=공매도
-# 선행 성격이나 전부가 공매도로 이어지진 않음 — 헤지·차익거래 목적도 포함) — 단위가 전부
-# "수량(주)"으로 같아 보여도 의미가 다르므로 절대 한 차트에 섞지 않고 각각 독립된
-# 차트/표로 보여준다. ⚠️ KOFIA로 이미 붙인 시장 전체 신용융자 잔고(위 '신용융자' 카테고리)와
-# 달리 이건 종목별 잔고다 — 혼동 방지용 캡션을 신용거래 쪽에 명시한다.
-# ⚠️ 실측(2026-08 라운드, 005930) 결과 세 엔드포인트 다 investor-trading과 동일한
-# until/count(최대 100) 페이지네이션 구조를 쓰지만, investor-trading과 달리 T+1 지연이 있다
-# (조회 당일 데이터가 아직 없고 전일까지만 온다) — UI 캡션에 명시한다. 호출이 3회(지표당
-# 1회) 나가므로 macro_indicator.py의 버튼 게이팅 섹션들과 같은 패턴으로 클릭 시에만
-# 조회한다(위 수급 섹션은 자동 조회지만, 이 섹션은 요청에 따라 명시적으로 게이팅한다).
-st.subheader("종목 리스크 지표 (공매도·신용·대차)")
-if currency != "KRW":
-    st.info("이 지표는 국내 상장기업 전용입니다(토스증권 API). 해외 종목은 지원하지 않습니다.")
-elif not (os.environ.get("TOSS_CLIENT_ID") and os.environ.get("TOSS_CLIENT_SECRET")):
-    st.info(
-        "TOSS_CLIENT_ID/TOSS_CLIENT_SECRET가 설정되어 있지 않아 공매도·신용거래·대차거래 "
-        "지표를 표시할 수 없습니다 — 토스증권 오픈 API 개발자센터에서 발급받은 키를 .env에 "
-        "추가하세요."
-    )
-else:
-    risk_stock_code = resolved_ticker.split(".")[0]
-
-    if st.button("리스크 지표 불러오기", key="sr_risk_indicators_load"):
-        st.session_state.sr_risk_indicators_loaded = True
-
-    if st.session_state.get("sr_risk_indicators_loaded"):
-        st.markdown("**공매도**")
-        st.caption(
-            "빌려서 판 물량 — 하락 베팅의 직접적인 지표입니다. ⚠️ T+1 지연이 있습니다(조회 "
-            "당일 데이터는 다음 거래일에 반영됩니다, 실측 확인)."
-        )
-        try:
-            short_selling = get_short_selling_history(risk_stock_code, days=20)
-        except TossDataError as e:
-            st.warning(f"공매도 데이터 조회에 실패했습니다: {e}")
-        else:
-            ss_display = short_selling.rename(index=lambda d: d.strftime("%m-%d"))
-            st.caption("일별 공매도 비중 (당일 전체 거래량/거래대금 대비, %)")
-            st.line_chart((ss_display[["거래량비중", "거래대금비중"]] * 100))
-            st.dataframe(
-                ss_display.style.format(
-                    {
-                        "거래량": "{:,.0f}주",
-                        "거래대금": "{:,.0f}원",
-                        "거래량비중": "{:.2%}",
-                        "거래대금비중": "{:.2%}",
-                    }
-                ),
-                width="stretch",
-            )
-
-        st.divider()
-        st.markdown("**신용거래 (융자·대주)**")
-        st.caption(
-            "융자: 빌린 돈으로 산 물량(개인 레버리지, 급락 시 반대매매 압력) · 대주: 빌린 "
-            "주식을 판 물량. ⚠️ 이 종목만의 잔고입니다 — 시장 전체 신용융자 잔고(위 매크로 "
-            "'신용융자' 카테고리, ECOS/KOFIA)와는 다릅니다."
-        )
-        try:
-            credit_trades = get_credit_trades_history(risk_stock_code, days=20)
-        except TossDataError as e:
-            st.warning(f"신용거래 데이터 조회에 실패했습니다: {e}")
-        else:
-            ct_display = credit_trades.rename(index=lambda d: d.strftime("%m-%d"))
-            st.caption("일별 융자·대주 잔고 추이 (단위: 주)")
-            st.line_chart(ct_display[["융자잔고", "대주잔고"]])
-            st.dataframe(
-                ct_display.style.format(
-                    {
-                        "융자잔고": "{:,.0f}주",
-                        "융자공여율": "{:.2%}",
-                        "대주잔고": "{:,.0f}주",
-                        "대주공여율": "{:.2%}",
-                    }
-                ),
-                width="stretch",
-            )
-
-        st.divider()
-        st.markdown("**대차거래**")
-        st.caption(
-            "주식을 빌려간 잔고 — 공매도의 선행 성격이 있습니다(빌려야 팔 수 있음). ⚠️ 다만 "
-            "대차 전부가 공매도로 이어지는 건 아닙니다(헤지·차익거래 목적도 포함) — 대차 잔고 "
-            "증가를 곧바로 공매도 증가로 해석하지 마세요."
-        )
-        try:
-            securities_lending = get_securities_lending_history(risk_stock_code, days=20)
-        except TossDataError as e:
-            st.warning(f"대차거래 데이터 조회에 실패했습니다: {e}")
-        else:
-            sl_display = securities_lending.rename(index=lambda d: d.strftime("%m-%d"))
-            st.caption("일별 대차 잔고 추이 (단위: 주)")
-            st.line_chart(sl_display["잔고수량"])
-            st.dataframe(
-                sl_display.style.format(
-                    {
-                        "체결수량": "{:,.0f}주",
-                        "상환수량": "{:,.0f}주",
-                        "잔고수량": "{:,.0f}주",
-                        "잔고금액": "{:,.0f}원",
-                    }
-                ),
-                width="stretch",
-            )
-
-        st.caption(
-            "출처: 토스증권 Open API(파일럿) · 세 지표는 단위·의미가 달라 서로 직접 비교하지 "
-            "말고 각각의 추이로 참고하세요."
-        )
-
-# 4. Peer Group & PER/PBR 밴드
-st.subheader("Peer Group 비교")
-st.caption("Yahoo Finance의 '유사 종목' 데이터 기반이며, 엄밀한 동일산업 분류가 아닌 참고용입니다.")
-try:
-    target_valuation = get_valuation_snapshot(resolved_ticker)
-except TickerNotFoundError as e:
-    st.error(str(e))
-    st.stop()
-peer_tickers = get_peer_tickers(resolved_ticker)
-if peer_tickers is None:
-    st.warning("Yahoo Finance 유사 종목 API 호출에 실패했습니다. 잠시 후 다시 시도해주세요.")
-elif not peer_tickers:
-    st.info("이 종목에 대한 유사 종목 데이터가 없습니다.")
-else:
-    peer_rows = []
-    for t in peer_tickers:
-        try:
-            peer_rows.append(get_valuation_snapshot(t))
-        except TickerNotFoundError:
-            continue
-    st.dataframe(build_valuation_table([target_valuation, *peer_rows]), width="stretch", hide_index=True)
-st.caption(
-    "PER/PBR은 모든 종목을 최근 확정 회계연도(FY) 실적 기준으로 직접 계산해 통일했습니다. "
-    "TTM보다 최대 1년 가까이 지연된 실적이라, 최근 실적이 급성장한 종목일수록 PER이 실제보다 높게 나올 수 있습니다."
-)
-st.caption(
-    "Fwd PER은 Yahoo Finance가 제공하는 향후 12개월 컨센서스 기반 PER입니다. "
-    "애널리스트 추정치가 충분치 않은 종목(주로 소형주)은 N/A로 표시됩니다."
-)
-
-st.subheader("PER / PBR 밴드 (연도별)")
-st.caption("최근 4~5개년 연간(FY) 데이터 기준이며, 일별 롤링 밴드는 지원하지 않습니다.")
-try:
-    band_df = get_historical_per_pbr(resolved_ticker)
-except ValuationDataError as e:
-    st.warning(str(e))
-else:
-    b1, b2 = st.columns(2)
-    for col, metric in [(b1, "PER"), (b2, "PBR")]:
-        series = band_df[metric].dropna()
-        col.markdown(f"**{metric}**")
-        if series.empty:
-            col.caption("계산 가능한 데이터가 없습니다.")
-            continue
-        col.bar_chart(series)
-        current = target_valuation[metric.lower()]
-        if current is not None:
-            col.caption(
-                f"현재 {metric} {format_multiple(current)} · "
-                f"최근 {len(series)}개년 범위 {format_multiple(series.min())}~{format_multiple(series.max())}"
-            )
+# 4. Peer Group 비교 + PER/PBR 밴드 — target_valuation은 아래 5-1(P/B×ROE)·6(요약 내보내기)에서도
+# 재사용되므로 반환받는다. valuation.render() 내부에서 target_valuation 조회 실패 시 st.stop()으로
+# 페이지 전체를 멈춘다(원래 코드와 동일한 동작 — 이 값이 하단부에서도 무조건 필요하기 때문).
+target_valuation = valuation.render(resolved_ticker)
 
 # 5. DCF 밸류에이션
 st.subheader("간단 DCF 밸류에이션")

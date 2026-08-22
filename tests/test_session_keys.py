@@ -14,13 +14,14 @@ from pathlib import Path
 
 VIEWS_DIR = Path(__file__).resolve().parent.parent / "views"
 
-# ⚠️ 파일 분할 라운드(2026-08) — macro_indicator는 더 이상 단일 파일이 아니라 조립 파일 +
-# views/macro/ 아래 섹션 모듈들로 나뉜다. 조립 파일 하나만 스캔하면 섹션 모듈에만 있는 키
-# (예: macro_bond_ai_engine, macro_cpi_breakdown_mode 등)를 놓쳐 이 테스트의 원래 목적(페이지
-# 간 세션 키 충돌 검사)이 조용히 약해진다 — 그래서 macro_indicator는 파일 목록(list[Path])으로
-# 받아 폴더 전체를 훑는다. 다른 페이지는 여전히 단일 파일이라 Path 그대로 둔다.
+# ⚠️ 파일 분할 라운드(2026-08) — macro_indicator·stock_research 둘 다 더 이상 단일 파일이
+# 아니라 조립 파일 + 섹션 모듈 패키지(views/macro/, views/stock/)로 나뉜다. 조립 파일 하나만
+# 스캔하면 섹션 모듈에만 있는 키(예: macro_bond_ai_engine, sr_edgar_form_categories 등)를 놓쳐
+# 이 테스트의 원래 목적(페이지 간 세션 키 충돌 검사)이 조용히 약해진다 — 그래서 이 두 페이지는
+# 파일 목록(list[Path])으로 받아 폴더 전체를 훑는다. 다른 페이지는 여전히 단일 파일이라 Path
+# 그대로 둔다.
 PAGE_FILES = {
-    "stock_research": VIEWS_DIR / "stock_research.py",
+    "stock_research": [VIEWS_DIR / "stock_research.py", *sorted((VIEWS_DIR / "stock").glob("*.py"))],
     "screener": VIEWS_DIR / "screener.py",
     "comparison": VIEWS_DIR / "comparison.py",
     "macro_indicator": [VIEWS_DIR / "macro_indicator.py", *sorted((VIEWS_DIR / "macro").glob("*.py"))],
