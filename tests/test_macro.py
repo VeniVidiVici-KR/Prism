@@ -19,6 +19,7 @@ from valley.macro import (
     MacroDataError,
     get_bls_series,
     get_bls_series_batch,
+    get_fed_target_rate,
     get_indicator_series,
     normalize_indexed,
 )
@@ -77,6 +78,70 @@ def test_get_indicator_series_kr_dgs10_unchanged_fred_path():
     with patch("valley.macro.get_fred_series", return_value=pd.Series([3.5])) as mock_fred:
         get_indicator_series("KR_DGS10")
     mock_fred.assert_called_once_with("IRLTLT01KRM156N")
+
+
+def test_get_fed_target_rate_stitches_pre_and_post_2008():
+    """정책금리 실체 규명 라운드(2026-09) — 2008-12-15까지는 단일 목표(DFEDTAR), 이후는
+    목표 범위의 중간값((DFEDTARU+DFEDTARL)/2)을 이어붙여야 한다(실측: DFEDTARU/DFEDTARL의
+    첫 관측이 2008-12-16)."""
+    pre = pd.Series([2.0, 1.0], index=pd.to_datetime(["2008-10-01", "2008-12-10"]))
+    upper = pd.Series([0.25, 0.25], index=pd.to_datetime(["2008-12-16", "2009-01-01"]))
+    lower = pd.Series([0.0, 0.0], index=pd.to_datetime(["2008-12-16", "2009-01-01"]))
+
+    def fake(series_id):
+        return {"DFEDTAR": pre, "DFEDTARU": upper, "DFEDTARL": lower}[series_id]
+
+    with patch("valley.macro.get_fred_series", side_effect=fake):
+        result = get_fed_target_rate()
+
+    assert list(result.index) == list(pre.index) + list(upper.index)
+    assert result.iloc[0] == pytest.approx(2.0)  # 2008-12-15 이전은 단일값 그대로
+    assert result.iloc[-1] == pytest.approx(0.125)  # 이후는 (0.25+0.0)/2
+
+
+def test_get_fed_target_rate_raises_when_empty():
+    with patch("valley.macro.get_fred_series", return_value=pd.Series([], dtype=float)):
+        with pytest.raises(MacroDataError):
+            get_fed_target_rate()
+
+
+def test_get_indicator_series_dispatches_fed_target_combo_key():
+    """"fed_target_combo" 필드가 있는 카탈로그 항목(US_POLICY_RATE)은 get_fed_target_rate로
+    위임돼야 한다(fred_id 경로를 타지 않음)."""
+    series = pd.Series([3.625], index=pd.to_datetime(["2026-09-01"]))
+    with patch("valley.macro.get_fed_target_rate", return_value=series) as mock_fn:
+        result = get_indicator_series("US_POLICY_RATE")
+    mock_fn.assert_called_once_with()
+    assert result.iloc[-1] == pytest.approx(3.625)
+
+
+def test_kr_policy_rate_is_ecos_only_with_no_fred_fallback():
+    """⚠️ 핵심 회귀 — KR_POLICY_RATE(한국은행 기준금리)는 정확한 FRED 미러가 없다
+    (INTDSRKRM193N은 재할인율로 별개 개념이고 최신값도 실제 기준금리와 어긋남을 실측
+    확인했다). fred_id 폴백을 두면 ECOS 실패 시 조용히 틀린 시리즈로 넘어가므로 두면 안
+    된다 — 실패는 그대로 드러나야 한다."""
+    entry = next(ind for inds in INDICATORS["KR"].values() for ind in inds if ind["key"] == "KR_POLICY_RATE")
+    assert entry["ecos"] == {"stat_code": "722Y001", "cycle": "M", "item_code": "0101000"}
+    assert "fred_id" not in entry
+
+
+def test_us_policy_rate_catalog_entry_has_no_fred_fallback():
+    entry = next(ind for inds in INDICATORS["US"].values() for ind in inds if ind["key"] == "US_POLICY_RATE")
+    assert entry["fed_target_combo"] is True
+    assert "fred_id" not in entry
+
+
+def test_market_rate_labels_no_longer_claim_to_be_policy_rate():
+    """⚠️ 핵심 회귀 — 콜금리(KR_CALL_RATE)·실효연방기금금리(US_FEDFUNDS)는 정책금리가
+    아니므로(실측: 둘 다 시장 실거래 금리) 라벨에 "기준금리"라는 표현이 남아있으면 안
+    된다(라벨 오해 재발 방지). fred_id 자체는 예전 그대로 유지해 시장금리로 병행 조회
+    가능해야 한다."""
+    kr_call = next(ind for inds in INDICATORS["KR"].values() for ind in inds if ind["key"] == "KR_CALL_RATE")
+    us_fedfunds = next(ind for inds in INDICATORS["US"].values() for ind in inds if ind["key"] == "US_FEDFUNDS")
+    assert "기준금리" not in kr_call["label"]
+    assert kr_call["fred_id"] == "IRSTCI01KRM156N"
+    assert "기준금리" not in us_fedfunds["label"]
+    assert us_fedfunds["fred_id"] == "FEDFUNDS"
 
 
 # ── get_bls_series / bls_id 디스패치 (물가 재편 라운드 2026-08, 실질임금) ────────────────────

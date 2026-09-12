@@ -369,7 +369,25 @@ INDICATORS = {
             },
         ],
         "금리": [
-            {"key": "US_FEDFUNDS", "label": "연방기금금리(기준금리)", "fred_id": "FEDFUNDS"},
+            # ⚠️ 정책금리 실체 규명 라운드(2026-09) — FEDFUNDS는 "기준금리"가 아니라 은행간
+            # 실거래의 가중평균(실효금리)이다. FRED 노트 원문: "the weighted average rate for
+            # all of these types of negotiations is called the effective federal funds rate."
+            # 실측(2008-09~12): 1.81→0.97→0.39→0.16으로 매끈하게 움직여, 12/16의 단일 목표
+            # 변경(2.00%→0.25%p 목표범위)을 뭉갠다 — 계단식이 아닌 이유. 라벨에서 "(기준금리)"
+            # 표기를 빼고, 진짜 정책 목표는 아래 US_POLICY_RATE로 별도로 둔다. 실효금리 자체도
+            # 시장 유동성 신호로 의미가 있어 삭제하지 않고 병행 유지한다.
+            {
+                "key": "US_FEDFUNDS", "label": "연방기금금리(실효, 시장)", "fred_id": "FEDFUNDS",
+                "description": "은행간 실거래 가중평균 — 연준이 정하는 목표(정책금리)와는 다른 시장금리",
+            },
+            {
+                "key": "US_POLICY_RATE", "label": "연준 목표금리(정책금리, 중간값)",
+                "fed_target_combo": True,
+                "description": (
+                    "FOMC 목표: 2008-12-15까지 단일값(DFEDTAR), 이후 범위(DFEDTARU/DFEDTARL)의 "
+                    "중간값 — 1982-09-27 이전은 공식 목표 시리즈가 없어 결측"
+                ),
+            },
             {"key": "US_DGS10", "label": "10년 국채금리", "fred_id": "DGS10"},
             {"key": "US_DGS2", "label": "2년 국채금리", "fred_id": "DGS2"},
             {"key": "US_DGS3MO", "label": "3개월 국채금리", "fred_id": "DGS3MO"},
@@ -712,7 +730,27 @@ INDICATORS = {
         # 유일하게 (월별)/(일별) 구분을 남겼다 — 2Y/3Y/5Y/20Y/30Y는 겹치는 다른 항목이 없어
         # 완전히 clean한 라벨로 뺐다.
         "금리": [
-            {"key": "KR_BASE_RATE", "label": "한국은행 기준금리", "fred_id": "IRSTCI01KRM156N"},
+            # ⚠️ 정책금리 실체 규명 라운드(2026-09) — IRSTCI01KRM156N의 FRED 공식 제목은
+            # "Interest Rates: Immediate Rates (< 24 Hours): Call Money/Interbank Rate: Total
+            # for Korea"(OECD 소스)다. 콜금리(은행간 익일물 시장금리)이지 기준금리가 아니다.
+            # 실측: 1991년부터 값이 있고 1998-01 25.34%(외환위기 콜금리 폭등)까지 있는데,
+            # 한국은행이 "기준금리"를 정책 목표로 도입한 건 1999년부터라 애초에 그 시절엔
+            # 기준금리라는 개념 자체가 없었다 — 다른 계열이라는 확증. 라벨에서 "기준금리"
+            # 표기를 빼고, 진짜 기준금리는 아래 KR_POLICY_RATE로 ECOS 직접 조회한다. 콜금리도
+            # 시장 신호로 의미가 있어 삭제하지 않고 병행 유지한다.
+            {
+                "key": "KR_CALL_RATE", "label": "콜금리(시장, 익일물)", "fred_id": "IRSTCI01KRM156N",
+                "description": "OECD 소스 은행간 익일물 콜금리 — 한국은행이 정하는 기준금리(정책금리)와는 다른 시장금리",
+            },
+            {
+                "key": "KR_POLICY_RATE", "label": "한국은행 기준금리",
+                "ecos": {"stat_code": "722Y001", "cycle": "M", "item_code": "0101000"},
+                "description": (
+                    "ECOS 1.3.1 한국은행 기준금리 및 여수신금리 · 1999-05-06 제도 시행 이후만 "
+                    "존재(그 이전 결측) · FRED엔 정확한 미러가 없음(INTDSRKRM193N은 재할인율로 "
+                    "별개 개념, 최신값이 실제 기준금리와 크게 어긋남을 실측 확인)"
+                ),
+            },
             {
                 "key": "KR_DGS10", "label": "국고채 10년 (월별)", "fred_id": "IRLTLT01KRM156N",
                 "description": "FRED 미러링 · 장기 시계열(가장 긴 소급) · 토스 키 없이도 조회 가능",
@@ -886,6 +924,29 @@ def get_fred_series(series_id: str) -> pd.Series:
     if series.empty:
         raise MacroDataError(f"FRED 시리즈 '{series_id}'에 유효한 데이터가 없습니다.")
     return series.sort_index()
+
+
+def get_fed_target_rate() -> pd.Series:
+    """연준 목표 연방기금금리(정책금리) — 정책금리 실체 규명 라운드(2026-09).
+
+    ⚠️ FEDFUNDS(실효연방기금금리)는 시장 실거래 가중평균이라 연준이 실제로 결정하는 목표와
+    다르다. 진짜 목표 시리즈는 2008-12-15까지 단일값(DFEDTAR), 이후는 범위(DFEDTARU 상단/
+    DFEDTARL 하단)로 갈라져 있다(실측: DFEDTARU/DFEDTARL 첫 관측이 2008-12-16). 대표값으로
+    범위의 중간값을 쓴다 — 실측 대조 결과 2026-09 중간값 3.625%가 같은 시점 실효금리
+    3.63%와 거의 일치해 대표값으로 타당함을 확인했다. ⚠️ 1982-09-27 이전은 연준이 명시적
+    목표를 공표하지 않아 DFEDTAR 자체가 없다 — 그 구간은 결측으로 남기고 실효금리로
+    대체하지 않는다(개념이 다른 시리즈를 섞으면 안 되므로).
+    """
+    pre_2008 = get_fred_series("DFEDTAR")
+    upper = get_fred_series("DFEDTARU")
+    lower = get_fred_series("DFEDTARL")
+    midpoint = (upper + lower) / 2
+
+    combined = pd.concat([pre_2008[pre_2008.index < midpoint.index.min()], midpoint])
+    combined = combined.sort_index()
+    if combined.empty:
+        raise MacroDataError("연준 목표금리를 계산할 데이터가 없습니다.")
+    return combined
 
 
 def _ecos_period_bounds(cycle: str) -> tuple[str, str]:
@@ -1211,6 +1272,9 @@ def get_bls_series_batch(
 def get_indicator_series(key: str) -> pd.Series:
     """카탈로그의 key로 지표 시계열을 조회하는 단일 진입점."""
     indicator = _find_indicator(key)
+
+    if indicator.get("fed_target_combo"):
+        return get_fed_target_rate()
 
     ecos_params = indicator.get("ecos")
     if ecos_params:

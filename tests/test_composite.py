@@ -133,12 +133,12 @@ def test_kr_yield_spread_10y3y_uses_3y_not_2y():
 
 def test_us_kr_bond10y_spread_distinct_from_policy_spread():
     """⚠️ 핵심 회귀 — 국고채10년 기준 한미 금리차(US_DGS10 - KR_BOND_10Y)는 기존
-    US_KR_RATE_SPREAD(정책금리차, FEDFUNDS - KR_BASE_RATE)와 다른 키·다른 소스여야 한다."""
+    US_KR_RATE_SPREAD(정책금리차, US_POLICY_RATE - KR_POLICY_RATE)와 다른 키·다른 소스여야 한다."""
     us_series = _series([4.69], ["2026-08-12"])
     kr_series = _series([4.295], ["2026-08-12"])
 
     def fake_get_indicator_series(key):
-        assert key in ("US_DGS10", "KR_BOND_10Y")  # 정책금리(FEDFUNDS/KR_BASE_RATE)를 쓰면 안 됨
+        assert key in ("US_DGS10", "KR_BOND_10Y")  # 정책금리(US_POLICY_RATE/KR_POLICY_RATE)를 쓰면 안 됨
         return {"US_DGS10": us_series, "KR_BOND_10Y": kr_series}[key]
 
     with patch("valley.composite.get_indicator_series", side_effect=fake_get_indicator_series):
@@ -151,6 +151,53 @@ def test_kr_yield_spread_raises_macro_data_error_when_no_overlap():
     with patch("valley.composite.get_indicator_series", return_value=empty):
         with pytest.raises(MacroDataError):
             get_composite_series("KR_YIELD_SPREAD_10Y2Y")
+
+
+# ── 정책금리 실체 규명 라운드(2026-09) — 실질금리·한미 정책금리차는 시장금리가 아니라 진짜
+# 정책금리(US_POLICY_RATE/KR_POLICY_RATE)로 계산해야 한다. 예전 US_FEDFUNDS(실효연방기금금리)·
+# KR_BASE_RATE(실은 콜금리)는 시장 실거래 금리라 정책금리 자리에 쓰면 안 됨을 실측으로 확인했다
+# (자세한 근거는 valley/composite.py의 _real_rate/_rate_spread 주석 참고). ─────────────────────
+
+
+def test_us_real_rate_uses_policy_rate_not_effective_fedfunds():
+    idx = pd.date_range("2025-09-01", periods=13, freq="MS")
+    cpi = pd.Series([100.0 + i for i in range(13)], index=idx)  # yoy = 12.0%
+    rate = pd.Series([3.625], index=[idx[-1]])
+
+    def fake(key):
+        assert key in ("US_POLICY_RATE", "US_CPI")  # US_FEDFUNDS를 쓰면 안 됨
+        return rate if key == "US_POLICY_RATE" else cpi
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake):
+        result = get_composite_series("US_REAL_RATE")
+    assert result.iloc[-1] == pytest.approx(3.625 - 12.0)
+
+
+def test_kr_real_rate_uses_policy_rate_not_call_rate():
+    idx = pd.date_range("2025-09-01", periods=13, freq="MS")
+    cpi = pd.Series([100.0 + i for i in range(13)], index=idx)  # yoy = 12.0%
+    rate = pd.Series([3.00], index=[idx[-1]])
+
+    def fake(key):
+        assert key in ("KR_POLICY_RATE", "KR_CPI")  # KR_BASE_RATE(콜금리)를 쓰면 안 됨
+        return rate if key == "KR_POLICY_RATE" else cpi
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake):
+        result = get_composite_series("KR_REAL_RATE")
+    assert result.iloc[-1] == pytest.approx(3.00 - 12.0)
+
+
+def test_rate_spread_uses_policy_rates_not_market_rates():
+    us = pd.Series([3.625], index=pd.to_datetime(["2026-08-01"]))
+    kr = pd.Series([3.00], index=pd.to_datetime(["2026-08-01"]))
+
+    def fake(key):
+        assert key in ("US_POLICY_RATE", "KR_POLICY_RATE")  # US_FEDFUNDS/KR_BASE_RATE 금지
+        return {"US_POLICY_RATE": us, "KR_POLICY_RATE": kr}[key]
+
+    with patch("valley.composite.get_indicator_series", side_effect=fake):
+        result = get_composite_series("US_KR_RATE_SPREAD")
+    assert result.iloc[-1] == pytest.approx(0.625)
 
 
 # ── 물가 재편 라운드(2026-08) — CPI/PCE YoY·MoM 파생지표 7종 + 실질임금 YoY ──────────────────

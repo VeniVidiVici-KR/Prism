@@ -215,8 +215,14 @@ def _moving_average(key: str, window: int, label: str | None = None) -> pd.Serie
 
 
 def _real_rate(country: str) -> pd.Series:
-    """실질금리 = 정책금리 - CPI 전년동월대비 상승률. 두 월별 시계열을 겹치는 구간만 뺀다."""
-    rate_key = "US_FEDFUNDS" if country == "US" else "KR_BASE_RATE"
+    """실질금리 = 정책금리 - CPI 전년동월대비 상승률. 두 월별 시계열을 겹치는 구간만 뺀다.
+
+    ⚠️ 정책금리 실체 규명 라운드(2026-09) — 예전엔 US_FEDFUNDS(실효연방기금금리)·
+    KR_BASE_RATE(실은 콜금리, OECD 소스)를 썼는데 둘 다 진짜 정책금리가 아니라 시장
+    실거래 금리였다(실측: KR_BASE_RATE는 기준금리 제도 시행(1999) 이전인 1991년부터
+    값이 있었다 — 이것만으로도 다른 계열이라는 확증). 진짜 정책금리인
+    US_POLICY_RATE(FOMC 목표 중간값)·KR_POLICY_RATE(ECOS 한국은행 기준금리)로 교체한다."""
+    rate_key = "US_POLICY_RATE" if country == "US" else "KR_POLICY_RATE"
     rate = get_indicator_series(rate_key)
     cpi_yoy = _cpi_yoy(country)
     df = pd.concat([rate.rename("rate"), cpi_yoy.rename("cpi_yoy")], axis=1, join="inner")
@@ -271,9 +277,15 @@ def _exports_yoy() -> pd.Series:
 
 
 def _rate_spread() -> pd.Series:
-    """한미 정책금리차 = 미국 연방기금금리 - 한국 기준금리 (월별, 겹치는 구간만)."""
-    us_rate = get_indicator_series("US_FEDFUNDS")
-    kr_rate = get_indicator_series("KR_BASE_RATE")
+    """한미 정책금리차 = 미국 연준 목표금리 - 한국은행 기준금리 (월별, 겹치는 구간만).
+
+    ⚠️ 정책금리 실체 규명 라운드(2026-09) — _real_rate와 같은 이유로 US_FEDFUNDS/
+    KR_BASE_RATE(둘 다 시장 실거래 금리)에서 US_POLICY_RATE/KR_POLICY_RATE(진짜 정책금리)로
+    교체했다. 실측 대조: 옛 시리즈 기준 2026-06 스프레드 1.093%p였는데, KR_BASE_RATE(FRED
+    미러)가 갱신을 멈춰 실제로는 그새 두 차례 더 오른 기준금리(2.50→2.75→3.00)를 반영하지
+    못해 최신 스프레드를 43%나 과대 표시하고 있었다."""
+    us_rate = get_indicator_series("US_POLICY_RATE")
+    kr_rate = get_indicator_series("KR_POLICY_RATE")
     df = pd.concat([us_rate.rename("us"), kr_rate.rename("kr")], axis=1, join="inner")
     if df.empty:
         raise MacroDataError("한미 정책금리차를 계산할 만큼 겹치는 데이터가 없습니다.")
