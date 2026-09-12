@@ -58,6 +58,123 @@ US_CPI_COMPONENT_SA_KEYS = {
     "US_CPI_CORE_SERVICES": "US_CPI_CORE_SERVICES_SA",
 }
 
+# ⚠️ 중분류(2단계) 기여도 분해 전용 (중분류 라운드, 2026-09) — 위 4개 대분류의 자식 항목이다.
+# ⚠️ 구조 선택: 부모별 중첩 dict가 아니라 "자식 key -> {parent, ...}" 평면 dict로 둔다. 기존
+# 뷰가 US_CPI_COMPONENT_BLS_IDS[key]처럼 key로 바로 찾는 접근 방식을 쓰고 있어 평면 쪽이
+# 자연스럽고, 부모별 묶기는 한 줄 컴프리헨션이면 되지만 반대로 중첩에서 key 단건 조회는
+# 번거롭다. 기존 대분류 dict 두 개는 전혀 건드리지 않는 순수 추가다.
+#
+# ⚠️ 전부 BLS API 실측으로 확정했다(추측 ID 없음, 2026-09 라운드 · 기준월 2026-08):
+# - 가중치(Relative Importance)는 NSA(CUUR) 시리즈의 aspects에만 붙는다 — SA(CUSR)로 같은
+#   요청을 보내면 전 항목 RI가 None으로 온다(실측). 그래서 SA 뷰도 NSA 가중치를 그대로
+#   재사용한다(대분류 MoM 뷰가 이미 쓰는 원칙과 동일 — 가중치는 계절조정과 무관한 속성).
+# - 자식 가중치 합 = 부모 가중치가 실측으로 성립한다: 식품 13.539 vs 13.540, 에너지 7.347 vs
+#   7.347, 근원상품 18.841 vs 18.842 (반올림 오차 0.001%p 수준).
+# - ⚠️ 근원 서비스만 자식 합이 59.350 vs 부모 60.272로 0.922%p 모자란다 — "가사서비스"
+#   (SEHP)가 빠졌기 때문이다. SEHP는 실측 결과 NSA 최신값이 2025-10이고 그 값마저 "-"(미공표),
+#   SA 시리즈는 아예 존재하지 않으며 RI aspect도 없어서 넣을 수가 없다. 빠진 가중치가 정확히
+#   가사서비스분임을 SAH3(가정용품+가사서비스, 4.245) − SAH31(가정용품, 3.323) = 0.922로
+#   역산해 확인했다. 억지로 채우지 않고 화면에서 차이로 드러낸다.
+# - ⚠️ "기타개인서비스"(SAGS)는 NSA만 있고 SA(CUSR0000SAGS)는 "Series does not exist"다(실측).
+#   sa_id=None으로 두고, MoM(SA) 뷰에서는 이 항목을 빼고 그만큼 커진 차이를 화면에 드러낸다.
+# - ⚠️ 3단계 이하(주거비 아래 자가주거비 등)는 이번 범위 밖이다.
+US_CPI_MIDLEVEL_COMPONENTS = {
+    # 식품
+    "US_CPI_FOOD_AT_HOME": {
+        "label": "가정식", "parent": "US_CPI_FOOD",
+        "nsa_id": "CUUR0000SAF11", "sa_id": "CUSR0000SAF11",
+    },
+    "US_CPI_FOOD_AWAY": {
+        "label": "외식", "parent": "US_CPI_FOOD",
+        "nsa_id": "CUUR0000SEFV", "sa_id": "CUSR0000SEFV",
+    },
+    # 에너지
+    "US_CPI_ENERGY_COMMODITIES": {
+        "label": "에너지 상품", "parent": "US_CPI_ENERGY",
+        "nsa_id": "CUUR0000SACE", "sa_id": "CUSR0000SACE",
+    },
+    "US_CPI_ENERGY_SERVICES": {
+        "label": "에너지 서비스", "parent": "US_CPI_ENERGY",
+        "nsa_id": "CUUR0000SEHF", "sa_id": "CUSR0000SEHF",
+    },
+    # 근원 상품
+    "US_CPI_ALCOHOL": {
+        "label": "주류", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAF116", "sa_id": "CUSR0000SAF116",
+    },
+    "US_CPI_HOUSEHOLD_FURNISHINGS": {
+        "label": "가정용품", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAH31", "sa_id": "CUSR0000SAH31",
+    },
+    "US_CPI_APPAREL": {
+        "label": "의류", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAA", "sa_id": "CUSR0000SAA",
+    },
+    "US_CPI_TRANSPORT_GOODS": {
+        "label": "교통상품(연료 제외)", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SATCLTB", "sa_id": "CUSR0000SATCLTB",
+    },
+    "US_CPI_MEDICAL_GOODS": {
+        "label": "의료용품", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAM1", "sa_id": "CUSR0000SAM1",
+    },
+    "US_CPI_RECREATION_GOODS": {
+        "label": "여가상품", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SARC", "sa_id": "CUSR0000SARC",
+    },
+    "US_CPI_EDU_COMM_GOODS": {
+        "label": "교육·통신상품", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAEC", "sa_id": "CUSR0000SAEC",
+    },
+    "US_CPI_OTHER_GOODS": {
+        "label": "기타상품", "parent": "US_CPI_CORE_GOODS",
+        "nsa_id": "CUUR0000SAGC", "sa_id": "CUSR0000SAGC",
+    },
+    # 근원 서비스
+    "US_CPI_SHELTER_MID": {
+        "label": "주거비", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SAH1", "sa_id": "CUSR0000SAH1",
+    },
+    "US_CPI_WATER_TRASH": {
+        "label": "수도·하수·쓰레기", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SEHG", "sa_id": "CUSR0000SEHG",
+    },
+    "US_CPI_MEDICAL_SERVICES": {
+        "label": "의료서비스", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SAM2", "sa_id": "CUSR0000SAM2",
+    },
+    "US_CPI_TRANSPORT_SERVICES": {
+        "label": "교통서비스", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SAS4", "sa_id": "CUSR0000SAS4",
+    },
+    "US_CPI_RECREATION_SERVICES": {
+        "label": "여가서비스", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SARS", "sa_id": "CUSR0000SARS",
+    },
+    "US_CPI_EDU_COMM_SERVICES": {
+        "label": "교육·통신서비스", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SAES", "sa_id": "CUSR0000SAES",
+    },
+    "US_CPI_OTHER_PERSONAL_SERVICES": {
+        # ⚠️ SA 시리즈 없음(실측: "Series does not exist") — MoM 뷰에서는 제외된다.
+        "label": "기타개인서비스", "parent": "US_CPI_CORE_SERVICES",
+        "nsa_id": "CUUR0000SAGS", "sa_id": None,
+    },
+}
+
+# ⚠️ BLS 계층상 존재하지만 이번에 넣을 수 없는 중분류 — 화면에서 "왜 자식 합이 부모보다
+# 모자란지"를 설명하려고 별도로 명시해둔다(조용히 빠뜨리면 사용자는 검증 차이의 원인을
+# 알 수 없다). 값이 되살아나면 위 dict로 옮기면 된다.
+US_CPI_MIDLEVEL_UNAVAILABLE = {
+    "가사서비스": {
+        "parent": "US_CPI_CORE_SERVICES",
+        "series_id": "CUUR0000SEHP",
+        # SAH3(가정용품+가사서비스, 4.245) − SAH31(가정용품, 3.323) = 0.922로 역산(실측).
+        "weight_pct": 0.922,
+        "reason": "BLS가 2025-10 이후 값을 공표하지 않음(SA 시리즈도 없음)",
+    },
+}
+
 # 한국: ECOS StatisticItemList가 901Y009(소비자물가지수)의 지출목적별 12개 대분류(A~L)
 # 가중치(WEIGHT 필드)를 실측으로 직접 제공한다(실측: item_code "0"의 WEIGHT="1000" — 1000분비
 # 기준, 12개 대분류 WEIGHT 합계 = 1000.0 정확히 일치 확인). K01(외식)은 K(음식·숙박)의 하위
@@ -997,6 +1114,98 @@ def get_bls_series(bls_series_id: str, years: int = 20) -> pd.Series:
     if series.empty:
         raise MacroDataError(f"BLS 시리즈 '{bls_series_id}'에 유효한 월별 데이터가 없습니다.")
     return series
+
+
+_BLS_BATCH_LIMIT = 50  # BLS API v2 등록키 기준 한 요청당 최대 시리즈 수
+
+
+def get_bls_series_batch(
+    bls_series_ids: list[str], years: int = 3, with_aspects: bool = False
+) -> dict[str, dict]:
+    """여러 BLS 시리즈를 한 요청으로 받는다 (중분류 라운드, 2026-09).
+
+    ⚠️ 기존 get_bls_series()는 시리즈당 POST 1회라, 중분류 19개 × (NSA/SA) = 38회가 나간다.
+    BLS API v2는 seriesid 배열로 한 요청에 최대 50개까지 받으므로(실측: 25개 요청이
+    REQUEST_SUCCEEDED) 배치로 바꿔 호출을 2회로 줄인다. ⚠️ 기존 get_bls_series는 그대로
+    둔다 — 실질임금(단건) 호출부가 쓰고 있어 건드릴 이유가 없다.
+
+    with_aspects=True면 같은 응답에서 상대중요도(Relative Importance)까지 함께 뽑는다 —
+    값과 가중치를 따로 두 번 부르지 않기 위해서다. ⚠️ 실측: aspects는 NSA(CUUR) 시리즈에만
+    붙고 SA(CUSR)에는 없다(전 항목 None).
+
+    반환: {series_id: {"series": pd.Series, "relative_importance": float|None, "ri_as_of": str|None}}
+    조회에 실패한(또는 값이 없는) 시리즈는 반환 dict에서 아예 빠진다 — 호출부가 "이 항목만
+    제외"를 스스로 판단할 수 있게, 전체를 예외로 죽이지 않는다(개별 항목 실패가 표 전체를
+    막지 않는 기존 원칙과 동일).
+    """
+    api_key = os.environ.get("BLS_API_KEY")
+    if not api_key:
+        raise MacroDataError(
+            "BLS_API_KEY가 설정되어 있지 않습니다. https://www.bls.gov/developers/ 에서 무료 "
+            "등록키를 발급받아 .env에 추가하세요."
+        )
+
+    end_year = date.today().year
+    result: dict[str, dict] = {}
+
+    for i in range(0, len(bls_series_ids), _BLS_BATCH_LIMIT):
+        chunk = bls_series_ids[i : i + _BLS_BATCH_LIMIT]
+        payload = {
+            "seriesid": chunk,
+            "registrationkey": api_key,
+            # get_bls_series와 같은 이유로 +1 (20년 초과 요청 시 BLS가 최신 쪽을 잘라낸다).
+            "startyear": str(end_year - years + 1),
+            "endyear": str(end_year),
+            "aspects": with_aspects,
+        }
+        try:
+            resp = requests.post(BLS_API_URL, json=payload, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            raise MacroDataError(f"BLS API 배치 조회 중 오류가 발생했습니다: {e}") from e
+
+        if data.get("status") != "REQUEST_SUCCEEDED":
+            raise MacroDataError(f"BLS API 오류: {data.get('message')}")
+
+        for s in data.get("Results", {}).get("series", []):
+            pairs = []
+            relative_importance = None
+            ri_as_of = None
+            for point in s.get("data", []):
+                period = point.get("period", "")
+                if not period.startswith("M") or period == "M13":
+                    continue
+                if with_aspects and relative_importance is None:
+                    for aspect in point.get("aspects", []):
+                        if aspect.get("name") == "Relative Importance":
+                            try:
+                                relative_importance = float(aspect["value"])
+                                ri_as_of = f"{point['year']}-{period.lstrip('M')}"
+                            except (TypeError, ValueError, KeyError):
+                                pass
+                            break
+                try:
+                    # 값 파싱 실패("-" 등 미공표 표기)는 그 포인트만 건너뛴다 —
+                    # get_bls_series와 동일한 (날짜, 값) 튜플 방식.
+                    ts = pd.Timestamp(year=int(point["year"]), month=int(period[1:]), day=1)
+                    value = float(point["value"])
+                except (TypeError, ValueError):
+                    continue
+                pairs.append((ts, value))
+
+            if not pairs:
+                continue
+            series = pd.Series(
+                [v for _, v in pairs], index=pd.DatetimeIndex([t for t, _ in pairs])
+            ).sort_index()
+            result[s["seriesID"]] = {
+                "series": series,
+                "relative_importance": relative_importance,
+                "ri_as_of": ri_as_of,
+            }
+
+    return result
 
 
 def get_indicator_series(key: str) -> pd.Series:

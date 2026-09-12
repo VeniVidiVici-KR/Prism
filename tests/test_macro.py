@@ -12,7 +12,16 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from valley.macro import INDICATORS, MacroDataError, get_bls_series, get_indicator_series, normalize_indexed
+from valley.macro import (
+    INDICATORS,
+    US_CPI_MIDLEVEL_COMPONENTS,
+    US_CPI_MIDLEVEL_UNAVAILABLE,
+    MacroDataError,
+    get_bls_series,
+    get_bls_series_batch,
+    get_indicator_series,
+    normalize_indexed,
+)
 
 
 def test_normalize_indexed_first_observation_becomes_base():
@@ -168,3 +177,109 @@ def test_debt_gdp_projection_series_added_with_correct_fred_ids():
     # 라벨에 소스 표기 없이 짧게(지난 정리 라운드 원칙 준수) — "(전망)"만 붙는다.
     assert us_proj["label"] == "국가부채/GDP (전망)"
     assert kr_proj["label"] == "국가부채/GDP (전망)"
+
+
+# ── CPI 중분류 라운드(2026-09) — 계층 구조 + BLS 배치 조회 ────────────────────────────────
+
+
+def _bls_batch_response(series_payloads, status="REQUEST_SUCCEEDED"):
+    """series_payloads: [{"seriesID": ..., "data": [...]}, ...]"""
+    resp = MagicMock()
+    resp.json.return_value = {"status": status, "Results": {"series": series_payloads}}
+    return resp
+
+
+def test_midlevel_components_hierarchy_is_wellformed():
+    """⚠️ 핵심 회귀 — 모든 중분류가 기존 4개 대분류 중 하나를 부모로 갖고, 시리즈 ID 접두어가
+    NSA=CUUR / SA=CUSR로 올바른지 고정한다(오타로 엉뚱한 계열을 붙이는 실수 방지)."""
+    parents = {"US_CPI_FOOD", "US_CPI_ENERGY", "US_CPI_CORE_GOODS", "US_CPI_CORE_SERVICES"}
+    assert len(US_CPI_MIDLEVEL_COMPONENTS) == 19
+    for key, meta in US_CPI_MIDLEVEL_COMPONENTS.items():
+        assert meta["parent"] in parents, key
+        assert meta["nsa_id"].startswith("CUUR0000"), key
+        if meta["sa_id"] is not None:
+            assert meta["sa_id"].startswith("CUSR0000"), key
+            # 같은 항목의 SA/NSA는 접두어만 다르고 suffix가 같아야 한다.
+            assert meta["sa_id"][8:] == meta["nsa_id"][8:], key
+        assert meta["label"]
+
+
+def test_midlevel_sa_gap_is_only_other_personal_services():
+    """⚠️ 실측 확인(2026-09): SA 시리즈가 없는 중분류는 '기타개인서비스' 하나뿐이다
+    (CUSR0000SAGS는 BLS에 존재하지 않음). 다른 항목까지 조용히 None이 되면 MoM 뷰 커버리지가
+    떨어지므로 여기서 고정한다."""
+    missing_sa = [k for k, m in US_CPI_MIDLEVEL_COMPONENTS.items() if m["sa_id"] is None]
+    assert missing_sa == ["US_CPI_OTHER_PERSONAL_SERVICES"]
+
+
+def test_midlevel_unavailable_documents_household_operations_gap():
+    """⚠️ 근원 서비스의 자식 합이 부모보다 0.92%p 모자란 이유(가사서비스 미공표)를 코드가
+    명시적으로 들고 있어야 화면에서 설명할 수 있다."""
+    assert "가사서비스" in US_CPI_MIDLEVEL_UNAVAILABLE
+    info = US_CPI_MIDLEVEL_UNAVAILABLE["가사서비스"]
+    assert info["parent"] == "US_CPI_CORE_SERVICES"
+    assert info["weight_pct"] == pytest.approx(0.922)
+
+
+def test_get_bls_series_batch_sends_one_request_for_many_series(monkeypatch):
+    """⚠️ 이 라운드의 핵심 — 19개를 19번 부르지 않고 한 요청에 seriesid 배열로 보내는지."""
+    monkeypatch.setenv("BLS_API_KEY", "dummy-key")
+    ids = [f"CUUR0000X{i:02d}" for i in range(19)]
+    payloads = [
+        {"seriesID": sid, "data": [{"year": "2026", "period": "M08", "value": "100.5", "aspects": []}]}
+        for sid in ids
+    ]
+    with patch("valley.macro.requests.post", return_value=_bls_batch_response(payloads)) as mock_post:
+        out = get_bls_series_batch(ids)
+    assert mock_post.call_count == 1  # 19회가 아니라 1회
+    assert mock_post.call_args.kwargs["json"]["seriesid"] == ids
+    assert len(out) == 19
+
+
+def test_get_bls_series_batch_chunks_above_api_limit(monkeypatch):
+    """BLS API는 한 요청당 50개까지라 그 이상은 나눠 보내야 한다."""
+    monkeypatch.setenv("BLS_API_KEY", "dummy-key")
+    ids = [f"CUUR0000X{i:03d}" for i in range(120)]
+    with patch("valley.macro.requests.post", return_value=_bls_batch_response([])) as mock_post:
+        get_bls_series_batch(ids)
+    assert mock_post.call_count == 3  # 50 + 50 + 20
+    assert len(mock_post.call_args_list[0].kwargs["json"]["seriesid"]) == 50
+    assert len(mock_post.call_args_list[2].kwargs["json"]["seriesid"]) == 20
+
+
+def test_get_bls_series_batch_extracts_relative_importance_with_aspects(monkeypatch):
+    """가중치(Relative Importance)를 값과 같은 응답에서 함께 뽑아야 호출이 2배로 늘지 않는다."""
+    monkeypatch.setenv("BLS_API_KEY", "dummy-key")
+    payloads = [
+        {
+            "seriesID": "CUUR0000SAF11",
+            "data": [
+                {
+                    "year": "2026", "period": "M08", "value": "300.0",
+                    "aspects": [
+                        {"name": "Relative Importance for previous year", "value": "9.999"},
+                        {"name": "Relative Importance", "value": "8.232"},
+                    ],
+                }
+            ],
+        }
+    ]
+    with patch("valley.macro.requests.post", return_value=_bls_batch_response(payloads)):
+        out = get_bls_series_batch(["CUUR0000SAF11"], with_aspects=True)
+    entry = out["CUUR0000SAF11"]
+    assert entry["relative_importance"] == pytest.approx(8.232)  # "previous year" 쪽이 아님
+    assert entry["ri_as_of"] == "2026-08"
+
+
+def test_get_bls_series_batch_skips_unpublished_and_missing_series(monkeypatch):
+    """⚠️ 실측 케이스(SEHP) — 값이 "-"로만 오는 시리즈는 결과에서 통째로 빠져야 하고, 그
+    때문에 나머지 시리즈까지 실패하면 안 된다(개별 항목 격리)."""
+    monkeypatch.setenv("BLS_API_KEY", "dummy-key")
+    payloads = [
+        {"seriesID": "CUUR0000DEAD", "data": [{"year": "2025", "period": "M10", "value": "-", "aspects": []}]},
+        {"seriesID": "CUUR0000LIVE", "data": [{"year": "2026", "period": "M08", "value": "123.4", "aspects": []}]},
+    ]
+    with patch("valley.macro.requests.post", return_value=_bls_batch_response(payloads)):
+        out = get_bls_series_batch(["CUUR0000DEAD", "CUUR0000LIVE"], with_aspects=True)
+    assert "CUUR0000DEAD" not in out
+    assert out["CUUR0000LIVE"]["series"].iloc[-1] == pytest.approx(123.4)

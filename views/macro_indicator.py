@@ -44,6 +44,7 @@ if st.session_state.get("macro_country") != country_code:
     st.session_state.macro_overlay_selection = []
     st.session_state.macro_cpi_components_loaded = False
     st.session_state.macro_cpi_breakdown_loaded = False
+    st.session_state.macro_cpi_midlevel_loaded = False
     st.session_state.macro_regional_fed_loaded = False
     st.session_state.macro_employment_report_loaded = False
     st.session_state.macro_credit_spread_loaded = False

@@ -352,12 +352,77 @@ def test_macro_indicator_cpi_contribution_mom_view_kr():
 
     mom_df = next(df for df in at.dataframe if "MoM(%)" in df.value.reset_index().columns).value
     assert "주택, 수도, 전기 및 연료" in mom_df.index
-    # 방향 확인 — 실측(2026-07)으로 전기·수도·주택과 교통이 마이너스 기여를 보였다(리포트의
-    # 전기가스수도 -0.17%p 방향과 일치). 항목 분류가 달라 절대값은 다를 수 있으니 부호만 본다.
-    assert mom_df.loc["주택, 수도, 전기 및 연료", "기여도(%p)"] < 0
-    assert mom_df.loc["교통", "기여도(%p)"] < 0
+    # ⚠️ 원래 여기서 "주택·수도·전기와 교통이 마이너스 기여"라는 부호를 고정했는데(2026-07
+    # 실측 기준), MoM 부호는 달마다 정상적으로 뒤집힌다 — 실제로 2026-08엔 주택·수도·전기가
+    # +0.256%(기여 +0.044%p)로 바뀌어 이 단정이 깨졌다(중분류 라운드 전 HEAD에서도 동일하게
+    # 실패함을 확인). 특정 달의 부호가 아니라 "구조가 성립하는지"를 검증하도록 바꾼다.
+    assert len(mom_df) == 12  # ECOS 지출목적별 12개 대분류
+    assert mom_df["기여도(%p)"].notna().all()
+    assert 99.0 < mom_df["가중치(%)"].sum() < 101.0  # 1000분비 → % 환산이 100에 수렴
+    # 기여도 ≈ 가중치 × 변화율 관계가 실제로 성립하는지(표가 엉뚱한 열을 보여주지 않는지).
+    recomputed = mom_df["가중치(%)"] / 100 * mom_df["MoM(%)"]
+    assert (recomputed - mom_df["기여도(%p)"]).abs().max() < 1e-6
     assert any("원계열" in c.value and "계절조정" in c.value for c in at.caption)  # NSA 한계 명시
     assert any("비교하지" in c.value for c in at.caption)  # 미국-한국 비교 금지 캡션
+
+
+@pytest.mark.network
+def test_macro_indicator_cpi_midlevel_breakdown_us():
+    """CPI 중분류 라운드(2026-09) — 4분할 아래에 중분류(2단계) 분해가 붙는지 확인한다.
+    (1) 버튼을 누르기 전엔 안 뜨고(자동 조회 금지), (2) 누르면 대분류 4개가 각각 expander로
+    펼쳐지며, (3) 표의 열 구성이 기존 4분할 표와 동일해(4열) 좁은 화면 잘림 위험을 늘리지
+    않고, (4) 계층 검증(자식 합 vs 부모) 캡션이 가중치·기여도 양쪽으로 표시되는지 본다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=180)
+    at.run(timeout=180)
+    next(b for b in at.button if b.label == "구성 비중 & 기여도 불러오기").click()
+    at.run(timeout=180)
+    assert at.exception == []
+
+    # 4분할만 로드된 상태 — 중분류는 아직 조회되지 않아야 한다(비용 통제).
+    assert not any("계층 검증" in c.value for c in at.caption)
+    midlevel_btn = next(b for b in at.button if b.label == "중분류까지 분해하기")
+
+    midlevel_btn.click()
+    at.run(timeout=180)
+    assert at.exception == []
+
+    # 대분류 4개 각각의 중분류 묶음(expander)
+    assert len(at.expander) == 4
+
+    # ⚠️ 표 열 구성이 기존 4분할 표와 같아야 한다(열을 늘려 좁은 화면에서 잘리게 만들지 않음).
+    yoy_tables = [df.value for df in at.dataframe if "YoY(%)" in df.value.reset_index().columns]
+    assert len(yoy_tables) == 5  # 대분류 표 1개 + 중분류 표 4개
+    for table in yoy_tables:
+        assert list(table.reset_index().columns) == ["항목", "가중치(%)", "YoY(%)", "기여도(%p)"]
+    # 식품(2) 에너지(2) 근원상품(8) 근원서비스(7) — 대분류 4행과 함께
+    assert sorted(len(t) for t in yoy_tables) == [2, 2, 4, 7, 8]
+
+    weight_checks = [c.value for c in at.caption if "계층 검증(가중치)" in c.value]
+    contrib_checks = [c.value for c in at.caption if "계층 검증(기여도)" in c.value]
+    assert len(weight_checks) == 4 and len(contrib_checks) == 4
+
+    # 값이 없어 뺀 중분류(가사서비스)는 이유와 함께 화면에 드러나야 한다 — 근원 서비스의
+    # 가중치 차이(-0.92%p)가 설명 없이 남지 않도록.
+    assert any("가사서비스" in c.value and "제외된 중분류" in c.value for c in at.caption)
+
+
+@pytest.mark.network
+def test_macro_indicator_cpi_midlevel_weight_sums_match_parents():
+    """⚠️ 이 라운드의 급소 — 중분류 가중치 합이 대분류와 맞는지(실측: 식품·에너지·근원상품은
+    반올림 오차 0.01%p 이내, 근원 서비스만 가사서비스 미공표로 약 0.92%p 부족)."""
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=180)
+    at.run(timeout=180)
+    next(b for b in at.button if b.label == "구성 비중 & 기여도 불러오기").click()
+    at.run(timeout=180)
+    next(b for b in at.button if b.label == "중분류까지 분해하기").click()
+    at.run(timeout=180)
+    assert at.exception == []
+
+    weight_checks = [c.value for c in at.caption if "계층 검증(가중치)" in c.value]
+    diffs = [float(c.rsplit("차이 ", 1)[1].replace("%p", "")) for c in weight_checks]
+    small, big = [d for d in diffs if abs(d) < 0.05], [d for d in diffs if abs(d) >= 0.05]
+    assert len(small) == 3, weight_checks  # 식품·에너지·근원 상품
+    assert len(big) == 1 and -1.0 < big[0] < -0.8, weight_checks  # 근원 서비스(가사서비스 결측)
 
 
 @pytest.mark.network
