@@ -144,6 +144,25 @@ def test_market_rate_labels_no_longer_claim_to_be_policy_rate():
     assert us_fedfunds["fred_id"] == "FEDFUNDS"
 
 
+def test_kr_m2_is_ecos_only_with_no_fred_fallback():
+    """⚠️ 핵심 회귀 — FRED 폴백 정리 라운드(2026-09). KR_M2의 FRED 미러(MYAGM2KRM189N)는
+    2017-05 이후 갱신이 끊겨(실측 확인) 9년 가까이 낡은 값을 조용히 보여주는 상태였다.
+    경상수지·가계신용과 같이 ECOS 전용으로 바꿔 키가 없으면 낡은 값 대신 명확한 실패를
+    내야 한다 — fred_id를 되살리는 회귀를 막는다."""
+    entry = next(ind for inds in INDICATORS["KR"].values() for ind in inds if ind["key"] == "KR_M2")
+    assert entry["ecos"] == {"stat_code": "161Y005", "cycle": "M", "item_code": "BBHS00"}
+    assert "fred_id" not in entry
+
+
+def test_get_indicator_series_kr_m2_raises_clear_error_without_ecos_key(monkeypatch):
+    """ECOS_API_KEY가 없으면 KR_M2는 (예전처럼 낡은 FRED 값으로 조용히 넘어가지 않고)
+    즉시 명확한 MacroDataError를 던져야 한다 — 네트워크 호출 없이 확인 가능(ECOS 키 체크가
+    HTTP 요청보다 먼저 실행됨)."""
+    monkeypatch.delenv("ECOS_API_KEY", raising=False)
+    with pytest.raises(MacroDataError, match="ECOS_API_KEY"):
+        get_indicator_series("KR_M2")
+
+
 # ── get_bls_series / bls_id 디스패치 (물가 재편 라운드 2026-08, 실질임금) ────────────────────
 
 

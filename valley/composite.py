@@ -238,10 +238,12 @@ def _m2_to_gdp(country: str) -> pd.Series:
     한국은 직전 4개 분기 합으로 연율화해 두 나라 모두 '연간 GDP 대비 M2 스톡' 기준으로 맞춘다.
 
     한국은 ECOS_API_KEY가 반드시 필요하다: _KR_GDP_UNIT_SCALE은 ECOS(161Y005, 십억원 단위)
-    기준으로 역산한 상수라, ECOS 호출이 실패해 FRED(MYAGM2KRM189N, 원 단위 그대로 + 2017년
-    이후 갱신 중단)로 폴백되면 단위도 안 맞고 데이터도 9년 가까이 낡아 조용히 틀린 비율이
-    나온다. get_ecos_series처럼 예외를 던지는 대신 폴백하는 CPI 계열과 달리, 이 지표는
-    절대 수준을 직접 쓰기 때문에 폴백을 허용할 수 없다.
+    기준으로 역산한 상수다. ⚠️ FRED 폴백 정리 라운드(2026-09) — 예전엔 ECOS 실패 시
+    FRED(MYAGM2KRM189N, 원 단위 그대로 + 2017-05 이후 갱신 중단)로 폴백해 단위도 안 맞고
+    데이터도 9년 가까이 낡은 값이 조용히 나올 위험이 있었는데, 이제 KR_M2 카탈로그 자체가
+    ECOS 전용으로 바뀌어 그 경로가 아예 없다(get_indicator_series("KR_M2")가 키 없으면
+    스스로 명확한 에러를 던진다) — 아래 조기 검사는 같은 실패를 더 이르고 구체적인
+    메시지(단위 불일치까지 설명)로 알려주기 위한 것이라 남겨둔다.
     """
     if country == "KR" and not os.environ.get("ECOS_API_KEY"):
         raise MacroDataError(

@@ -112,3 +112,17 @@ def render(country_code: str) -> None:
                         st.caption(indicator["description"])
                     st.line_chart(series)
                     st.caption(f"데이터 기준일: {series.index[-1]:%Y-%m} · {len(series)}개 관측치")
+                    # ⚠️ FRED 폴백 정리 라운드(2026-09) — ECOS+fred_id를 함께 가진 항목(KR_CPI
+                    # 등)이 실제로 FRED로 폴백됐을 때 사용자가 알 수 있게 한다. get_fred_series는
+                    # 반환 시리즈의 name을 원본 fred_id로 남기고 get_ecos_series는 name을 안
+                    # 붙이므로(실측 확인), series.name이 fred_id와 같으면 폴백이 일어난 것이다.
+                    # ⚠️ fred_id가 없는(ECOS 전용) 항목은 indicator.get("fred_id")도
+                    # series.name도 둘 다 None이라 "not fred_id"를 먼저 걸지 않으면
+                    # None == None으로 오탐(KR_M2 등에서 폴백이 없는데도 캡션이 뜸)한다 —
+                    # 실측으로 발견해 fred_id의 truthy 체크를 앞에 둔다.
+                    if indicator.get("fred_id") and series.name == indicator["fred_id"]:
+                        st.caption(
+                            f"⚠️ ECOS 조회에 실패해 FRED 미러 데이터로 대체했습니다 — 이 미러는 "
+                            f"{series.index[-1]:%Y-%m}까지만 제공됩니다. 최신 데이터를 보려면 "
+                            "ECOS_API_KEY를 확인하세요."
+                        )

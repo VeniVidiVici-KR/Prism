@@ -56,9 +56,10 @@ if st.session_state.get("macro_country") != country_code:
 
 if country_code == "KR" and not os.environ.get("ECOS_API_KEY"):
     st.info(
-        "ECOS_API_KEY가 설정되어 있지 않아 한국 CPI/M2가 FRED의 미러링 데이터(갱신이 멈춘 과거 "
-        "시점까지)로 표시됩니다. 최신 데이터를 보려면 https://ecos.bok.or.kr/api/ 에서 API 키를 "
-        "발급받아 .env에 추가하세요."
+        "ECOS_API_KEY가 설정되어 있지 않아 한국 CPI가 FRED의 미러링 데이터(2023-11 이후 갱신 "
+        "중단)로 표시되고, 한국 M2는 대응하는 FRED 계열이 없어(2017-05 이후 멈춘 미러라 폴백을 "
+        "없앴습니다) 조회에 실패합니다. 최신 데이터를 보려면 https://ecos.bok.or.kr/api/ 에서 "
+        "API 키를 발급받아 .env에 추가하세요."
     )
 
 # ⚠️ 섹션 순서는 분할 전 원래 순서를 그대로 유지한다(임의 변경 없음).

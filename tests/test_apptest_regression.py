@@ -1212,6 +1212,87 @@ def test_macro_indicator_kofia_missing_key_no_crash(monkeypatch):
         assert any("KOFIA_API_KEY" in i.value for i in at.info)
 
 
+def test_macro_indicator_kr_m2_missing_key_shows_clear_error_no_crash(monkeypatch):
+    """FRED 폴백 정리 라운드(2026-09) — KR_M2는 이제 ECOS 전용이라, 키가 없으면 (예전처럼
+    2017-05 FRED 값으로 조용히 넘어가지 않고) 명확한 경고로 실패해야 하며 앱이 죽지 않아야
+    한다. ECOS 키 체크가 HTTP 요청보다 먼저 실행돼(valley.macro.get_ecos_series) 실제
+    네트워크 호출 없이 확인 가능하다 — fast tier."""
+    monkeypatch.delenv("ECOS_API_KEY", raising=False)
+    with patch("dotenv.load_dotenv", return_value=True):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        country_radio = next(r for r in at.radio if r.label == "국가")
+        country_radio.set_value("한국")
+        at.run()
+
+        assert any("한국 M2는 대응하는 FRED 계열이 없어" in i.value for i in at.info)
+
+        btn = next(b for b in at.button if b.label == "M2 통화량")
+        btn.click()
+        at.run()
+
+    assert at.exception == []
+    assert any("ECOS_API_KEY가 설정되어 있지 않습니다" in w.value for w in at.warning)
+
+
+@pytest.mark.network
+def test_macro_indicator_kr_cpi_fred_fallback_caption_shown_when_ecos_key_missing(monkeypatch):
+    """FRED 폴백 정리 라운드(2026-09) — KR_CPI는 (KR_M2와 달리) 그대로 FRED 폴백을 유지하되,
+    폴백이 실제로 쓰였을 때 사용자가 알 수 있는 캡션이 떠야 한다. get_ecos_series의 키 체크는
+    네트워크 없이 통과하지만 이후 get_fred_series가 실제 FRED CSV를 조회하므로 network
+    tier다. ⚠️ views.macro._shared.load_series가 st.cache_data(ttl=3600)라 이 프로세스 안의
+    다른(더 먼저 실행된) 테스트가 이미 ECOS 키로 "KR_CPI"를 캐싱해놨으면 키를 지워도 캐시
+    히트로 폴백이 아예 안 일어난다 — 캐시를 먼저 비운다."""
+    from views.macro._shared import load_series
+
+    load_series.clear()
+    monkeypatch.delenv("ECOS_API_KEY", raising=False)
+    with patch("dotenv.load_dotenv", return_value=True):
+        at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+        at.run()
+        country_radio = next(r for r in at.radio if r.label == "국가")
+        country_radio.set_value("한국")
+        at.run(timeout=90)
+
+        btn = next(b for b in at.button if b.label == "CPI (소비자물가지수)")
+        btn.click()
+        at.run(timeout=90)
+
+    assert at.exception == []
+    fallback_captions = [c.value for c in at.caption if "FRED 미러 데이터로 대체" in c.value]
+    assert len(fallback_captions) == 1
+    assert "2023-11" in fallback_captions[0]
+
+
+@pytest.mark.network
+def test_macro_indicator_kr_cpi_and_m2_unchanged_when_ecos_key_present():
+    """⚠️ 핵심 회귀 — ECOS_API_KEY가 있는 환경(이 프로젝트의 기본 상태)에서는 KR_CPI/KR_M2
+    둘 다 항상 ECOS 경로를 타왔으므로, 이번 라운드의 카탈로그 변경(KR_M2 fred_id 제거,
+    KR_CPI 폴백 캡션 추가)이 실제 표시값에 아무 영향을 주면 안 된다 — 폴백 캡션이 뜨지
+    않아야 하고, 값도 valley.macro.get_indicator_series 직접 호출과 일치해야 한다. ⚠️ 앞
+    테스트(키 없음)가 남긴 stale 폴백 캐시를 물려받지 않도록 먼저 비운다."""
+    from valley.macro import get_indicator_series
+    from views.macro._shared import load_series
+
+    load_series.clear()
+    at = AppTest.from_file(str(VIEWS_DIR / "macro_indicator.py"), default_timeout=90)
+    at.run()
+    country_radio = next(r for r in at.radio if r.label == "국가")
+    country_radio.set_value("한국")
+    at.run(timeout=90)
+
+    for label, key in [("CPI (소비자물가지수)", "KR_CPI"), ("M2 통화량", "KR_M2")]:
+        btn = next(b for b in at.button if b.label == label)
+        btn.click()
+        at.run(timeout=90)
+        assert at.exception == []
+        assert not [c for c in at.caption if "FRED 미러 데이터로 대체" in c.value]
+
+        expected = get_indicator_series(key)
+        as_of_caption = next(c for c in at.caption if "데이터 기준일" in c.value)
+        assert f"{expected.index[-1]:%Y-%m}" in as_of_caption.value
+
+
 @pytest.mark.network
 def test_macro_indicator_debt_gdp_projection_button_shows_combined_view():
     """전망 반영 라운드(2026-08) — "재정" 카테고리에 실적(기존)·전망(신규) 버튼이 함께 있고,
