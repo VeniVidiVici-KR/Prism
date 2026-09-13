@@ -53,27 +53,43 @@ def render(resolved_ticker: str) -> dict:
             "Fwd PER은 Yahoo Finance가 제공하는 향후 12개월 컨센서스 기반 PER입니다. "
             "애널리스트 추정치가 충분치 않은 종목(주로 소형주)은 N/A로 표시됩니다."
         )
+        if target_valuation.get("currency_mismatch"):
+            st.caption(
+                f"⚠️ PER/PBR이 N/A인 종목은 주가 통화와 재무제표 통화가 달라(예: 이 종목은 "
+                f"{target_valuation.get('financial_currency')}) 계산에서 제외했습니다. Fwd PER·"
+                "배당수익률·배당성향·ROE·시가총액은 영향받지 않아 그대로 표시됩니다."
+            )
 
         st.subheader("PER / PBR 밴드 (연도별)")
         st.caption("최근 4~5개년 연간(FY) 데이터 기준이며, 일별 롤링 밴드는 지원하지 않습니다.")
-        try:
-            band_df = get_historical_per_pbr(resolved_ticker)
-        except ValuationDataError as e:
-            st.warning(str(e))
+        if target_valuation.get("currency_mismatch"):
+            # ⚠️ 통화 불일치 라운드(2026-09) — 밴드도 Peer 표의 PER/PBR과 완전히 같은 계산
+            # 방식(raw 재무제표 ÷ 연말 종가)이라 같은 이유로 통째로 막는다. get_historical_per_pbr
+            # 자체는 호출하지 않는다(불필요한 조회 방지).
+            st.warning(
+                f"이 종목은 주가 통화(USD 등)와 재무제표 통화({target_valuation.get('financial_currency')})가 "
+                "달라 PER/PBR 밴드를 계산할 수 없습니다. 한국 기업의 ADR인 경우 6자리 원주 코드로 "
+                "조회하면 정상 계산됩니다."
+            )
         else:
-            b1, b2 = st.columns(2)
-            for col, metric in [(b1, "PER"), (b2, "PBR")]:
-                series = band_df[metric].dropna()
-                col.markdown(f"**{metric}**")
-                if series.empty:
-                    col.caption("계산 가능한 데이터가 없습니다.")
-                    continue
-                col.bar_chart(series)
-                current = target_valuation[metric.lower()]
-                if current is not None:
-                    col.caption(
-                        f"현재 {metric} {format_multiple(current)} · "
-                        f"최근 {len(series)}개년 범위 {format_multiple(series.min())}~{format_multiple(series.max())}"
-                    )
+            try:
+                band_df = get_historical_per_pbr(resolved_ticker)
+            except ValuationDataError as e:
+                st.warning(str(e))
+            else:
+                b1, b2 = st.columns(2)
+                for col, metric in [(b1, "PER"), (b2, "PBR")]:
+                    series = band_df[metric].dropna()
+                    col.markdown(f"**{metric}**")
+                    if series.empty:
+                        col.caption("계산 가능한 데이터가 없습니다.")
+                        continue
+                    col.bar_chart(series)
+                    current = target_valuation[metric.lower()]
+                    if current is not None:
+                        col.caption(
+                            f"현재 {metric} {format_multiple(current)} · "
+                            f"최근 {len(series)}개년 범위 {format_multiple(series.min())}~{format_multiple(series.max())}"
+                        )
 
     return target_valuation

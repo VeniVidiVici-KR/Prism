@@ -1,4 +1,4 @@
-"""과거 FCF 증가율 (하단부 분할 라운드, 2026-09 — views/stock_research.py에서 이동, 로직 변경 없음).
+"""과거 FCF 증가율 (하단부 분할 라운드, 2026-09 — views/stock_research.py에서 이동).
 
 감으로 넣는 성장률 가정에 실측 앵커를 제공한다. get_free_cash_flow_history를 DCF 계산(1개년
 또는 3개년 평균)과 별개로 더 긴 기간(4개년)으로 다시 불러와 계산한다.
@@ -16,6 +16,14 @@
 stock_research.py 사이드바 블록(슬라이더 렌더링 직전)에서 일어난다 — 이 파일을 옮겨도 그
 소비 순서는 그대로다(사이드바 코드 자체는 이번 라운드에서 옮기지 않았고, 매 rerun마다 이
 섹션보다 먼저 실행되기 때문).
+
+⚠️ 통화 불일치 라운드(2026-09) — 증가율(%)은 KRW/KRW 같은 비율이라 currency_mismatch(ADR)
+종목에서도 안전하다(실측: KT FCF YoY 계산 정상). 다만 표에 함께 찍는 **절대 FCF 금액**은
+get_free_cash_flow_history가 raw 재무제표(공시통화)를 그대로 주므로, 거래통화(currency)로
+라벨링하면 거짓말이 된다(예: ₩900,771,000,000를 "$900,771,000,000.00"로 표시) — 계산이
+멀쩡해서 오히려 더 위험한 "조용히 틀린" 케이스다. currency_mismatch면 절대금액 표시만
+financial_currency로 바꾸고 그 이유를 캡션으로 밝힌다(막지는 않는다 — 증가율 자체는 유효한
+정보이므로).
 """
 
 import pandas as pd
@@ -27,7 +35,14 @@ from valley.valuation import fcf_growth_history
 from views._cache import get_free_cash_flow_history
 
 
-def render(*, resolved_ticker: str, currency: str, use_fade: bool) -> dict | None:
+def render(
+    *,
+    resolved_ticker: str,
+    currency: str,
+    use_fade: bool,
+    currency_mismatch: bool = False,
+    financial_currency: str | None = None,
+) -> dict | None:
     st.subheader("과거 FCF 증가율")
     try:
         fcf_history_for_growth = get_free_cash_flow_history(resolved_ticker, years=4)
@@ -54,12 +69,22 @@ def render(*, resolved_ticker: str, currency: str, use_fade: bool) -> dict | Non
         if growth["has_non_positive_year"]:
             st.caption("⚠️ 조회 기간 중 FCF가 0 이하인 연도가 있습니다 — 아래 표에서 확인하고, 증가율 해석에 주의하세요.")
 
-        st.caption(f"단위: {currency}")
+        # ⚠️ 통화 불일치면 절대 FCF 금액은 거래통화(currency)가 아니라 원본 재무제표 통화
+        # (financial_currency)로 라벨링한다 — 값 자체는 원래도 그 통화였다(get_free_cash_flow_history가
+        # raw 재무제표를 그대로 주므로), 라벨만 정직하게 고친다.
+        amount_currency = financial_currency if currency_mismatch and financial_currency else currency
+        st.caption(f"단위: {amount_currency}")
+        if currency_mismatch:
+            st.caption(
+                f"⚠️ 이 종목은 주가 통화({currency})와 재무제표 통화({financial_currency})가 달라, "
+                f"위 금액은 재무제표 원본 통화({financial_currency}) 기준입니다(환산되지 않음) — "
+                "증가율(%)은 통화와 무관해 그대로 신뢰할 수 있습니다."
+            )
         growth_df = pd.DataFrame(
             [
                 {
                     "연도": item["year"],
-                    "FCF": format_money(item["fcf"], currency),
+                    "FCF": format_money(item["fcf"], amount_currency),
                     "전년比 증가율": f"{item['yoy'] * 100:+.1f}%" if item["yoy"] is not None else item["yoy_reason"],
                 }
                 for item in growth["yearly"]

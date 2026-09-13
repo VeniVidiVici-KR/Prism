@@ -124,6 +124,82 @@ def test_stock_research_fcff_wacc_method_msft():
 
 
 @pytest.mark.network
+def test_stock_research_currency_mismatch_adr_blocks_dcf_and_per_pbr():
+    """통화 불일치 라운드(2026-09) — KT(KT Corp ADR)는 주가 통화(USD)와 재무제표 통화(KRW)가
+    달라 실측 확인 결과 정식 DCF 괴리율이 +18,692,553%까지 터졌었다. 이제 정식/간이 DCF·
+    PER/PBR 밴드가 전부 명확한 경고로 막히고, 절대 수치 없이 조용히 그럴듯한 값을 보여주는
+    일이 없어야 한다(이 라운드의 핵심 요구사항). 과거 FCF 증가율(비율)은 막지 않되 절대
+    금액 라벨을 재무제표 통화(KRW)로 정정해야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("KT")
+    method_radio = next(r for r in at.radio if r.label == "밸류에이션 방식")
+    method_radio.set_value("정식 (FCFF → WACC)")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run()
+    assert at.exception == []
+
+    warnings_text = "\n".join(w.value for w in at.warning)
+    assert "PER/PBR 밴드를 계산할 수 없습니다" in warnings_text
+    assert "정식 DCF를 계산할 수 없습니다" in warnings_text
+    assert "DCF를 계산할 수 없습니다" in warnings_text  # 간이 DCF
+    assert "KRW" in warnings_text  # 재무제표 통화가 구체적으로 명시됨
+    assert "원주" in warnings_text  # ADR 안내
+
+    # ⚠️ 핵심 회귀 — 막힌 계산의 잔재(수십만% 괴리율 등 절대 수치)가 metric으로 새어나오면
+    # 안 된다. "정식 DCF 괴리율"/"DCF 괴리율"/"주당 내재가치" metric 자체가 아예 없어야 한다.
+    blocked_labels = {"정식 DCF 괴리율", "DCF 괴리율", "주당 내재가치 (정식 DCF)", "주당 내재가치 (DCF)"}
+    rendered_labels = {m.label for m in at.metric}
+    assert not (blocked_labels & rendered_labels), f"차단됐어야 할 지표가 렌더링됨: {blocked_labels & rendered_labels}"
+
+    captions_text = "\n".join(c.value for c in at.caption)
+    assert "재무제표 원본 통화(KRW) 기준입니다" in captions_text
+
+
+@pytest.mark.network
+def test_stock_research_currency_mismatch_financial_adr_blocks_pb_roe_keeps_ddm():
+    """통화 불일치 라운드(2026-09) — SHG(신한금융 ADR, 업종 Banks)는 P/B×ROE와 DDM 경로를
+    모두 탄다. P/B×ROE는 BVPS(raw 재무제표) × 주가(거래통화)를 섞어 실측 확인 결과 괴리율이
+    +118,622%까지 터졌으므로 막혀야 한다. DDM은 배당(t.dividends)이 이미 거래통화로 오므로
+    막지 않되, 옆 카드가 막힌 화면에서 혼란스럽지 않도록 안전한 이유를 캡션으로 밝혀야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+    at.run()
+    at.text_input[0].input("SHG")
+    next(b for b in at.button if b.label == "조회하기").click()
+    at.run()
+    assert at.exception == []
+
+    warnings_text = "\n".join(w.value for w in at.warning)
+    assert "P/B×ROE를 계산할 수 없습니다" in warnings_text
+
+    captions_text = "\n".join(c.value for c in at.caption)
+    assert "통화 불일치의 영향을 받지 않습니다" in captions_text  # DDM 안전 안내
+
+    blocked_labels = {"P/B×ROE 괴리율", "PBR 괴리율", "정당 주가"}
+    rendered_labels = {m.label for m in at.metric}
+    assert not (blocked_labels & rendered_labels), f"차단됐어야 할 지표가 렌더링됨: {blocked_labels & rendered_labels}"
+    # DDM 결과(안전)는 배당 이력이 있으면 정상적으로 나와야 한다 — 존재 자체를 막지 않는다.
+    assert any(m.label == "DDM 주당가치" for m in at.metric) or any(
+        "배당" in c.value for c in at.caption
+    ), "DDM 관련 지표/안내가 전혀 없음 — 안전한 지표까지 함께 막힌 것 아닌지 확인 필요"
+
+
+@pytest.mark.network
+def test_stock_research_currency_mismatch_normal_tickers_show_no_warning():
+    """⚠️ 핵심 회귀 — 정상 종목(통화 일치)에서는 통화 불일치 경고 문구가 절대 뜨면 안 된다
+    (오탐 방지 가드)."""
+    for ticker in ("AAPL", "JPM"):
+        at = AppTest.from_file(str(VIEWS_DIR / "stock_research.py"), default_timeout=90)
+        at.run()
+        at.text_input[0].input(ticker)
+        next(b for b in at.button if b.label == "조회하기").click()
+        at.run()
+        assert at.exception == []
+        warnings_text = "\n".join(w.value for w in at.warning)
+        assert "통화가 달라" not in warnings_text, f"{ticker}에서 통화 불일치 경고가 잘못 표시됨"
+
+
+@pytest.mark.network
 def test_stock_research_growth_rate_slider_clamp_and_fade_button_nvda():
     """NVDA는 최근 4개년 FCF CAGR이 193.9%로 슬라이더 상한(100%)을 크게 넘는 대표 케이스다.
     (1) 비감쇠 모드에서 버튼 클릭 시 100%로 clamp되고 고성장 안내 캡션이 뜨는지,

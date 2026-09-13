@@ -1,5 +1,5 @@
 """간단 DCF 밸류에이션 + 현재 주가 내재 성장률 + 세 성장률 대조 + 민감도 분석
-(하단부 분할 라운드, 2026-09 — views/stock_research.py에서 이동, 로직 변경 없음).
+(하단부 분할 라운드, 2026-09 — views/stock_research.py에서 이동).
 
 ⚠️ 원본에서 AI 해설·요약 내보내기(views/stock/ai_commentary_section.py,
 views/stock/summary_export.py)가 이 섹션의 `else:` 블록 안에 중첩돼 있었다 — 즉 DCF가 여기서
@@ -35,6 +35,18 @@ def render(
     yfinance_financials_failed: bool,
     growth: dict | None,
 ) -> tuple[dict | None, float | None]:
+    if snapshot.get("currency_mismatch"):
+        # ⚠️ 통화 불일치 라운드(2026-09) — latest_fcf가 raw 재무제표(공시통화)라 주가(거래통화)와
+        # 나누면 결과가 터진다(실측: KT 내재가치 ₩32,535 vs 주가 $19.90, 괴리율 +163,394%).
+        # (None, None) 반환은 latest_fcf is None 등 기존 게이팅과 동일한 신호라 조립부의
+        # "dcf_result is not None"일 때만 AI 해설·요약 내보내기를 부르는 로직이 자동으로 함께
+        # 막힌다 — 별도 처리 불필요.
+        st.warning(
+            f"이 종목은 주가 통화(USD 등)와 재무제표 통화({snapshot.get('financial_currency')})가 "
+            "달라 DCF를 계산할 수 없습니다. 한국 기업의 ADR인 경우 6자리 원주 코드로 조회하면 "
+            "정상 계산됩니다."
+        )
+        return None, None
     if latest_fcf is None:
         st.warning(
             "재무 데이터가 없어 DCF 계산을 진행할 수 없습니다."

@@ -326,8 +326,13 @@ company_overview.render(snapshot, currency, resolved_ticker, selected_engine)
 # 2. 주가 추이
 price_trend.render(resolved_ticker, currency)
 
-# 3. 재무 추이
-financial_trend.render(resolved_ticker, currency, financial_history, yfinance_financials_failed)
+# 3. 재무 추이 — currency_mismatch/financial_currency는 ADR(주가·재무제표 통화 불일치) 종목의
+# 절대금액 라벨을 정직하게 고치기 위해 넘긴다(계산 자체는 그대로, 라벨만 원본 통화로 표시).
+financial_trend.render(
+    resolved_ticker, currency, financial_history, yfinance_financials_failed,
+    currency_mismatch=snapshot.get("currency_mismatch", False),
+    financial_currency=snapshot.get("financial_currency"),
+)
 
 # 3-1. 최근 공시 (DART) — yfinance 재무 성공/실패와 무관하게 한국 종목이면 항상 표시하는 상시 섹션.
 dart_disclosures.render(resolved_ticker, currency)
@@ -373,7 +378,13 @@ if fcf_excluded_years:
     st.caption(f"3개년 평균 계산 시 FCF가 음수인 {fcf_excluded_years}개 연도는 제외했습니다.")
 
 # 5-1. 과거 FCF 증가율 — growth는 아래 5-3(간단 DCF의 세 성장률 대조)이 재사용하므로 반환받는다.
-growth = fcf_growth.render(resolved_ticker=resolved_ticker, currency=currency, use_fade=use_fade)
+# currency_mismatch/financial_currency는 절대 FCF 금액의 통화 라벨을 정직하게 고치기 위함
+# (증가율%은 통화 무관이라 이미 안전 — fcf_growth.py 모듈 docstring 참고).
+growth = fcf_growth.render(
+    resolved_ticker=resolved_ticker, currency=currency, use_fade=use_fade,
+    currency_mismatch=snapshot.get("currency_mismatch", False),
+    financial_currency=snapshot.get("financial_currency"),
+)
 
 # 5-2. 정식 DCF (FCFF → WACC → EV → Equity) — 사이드바에서 "정식"을 선택했을 때만 렌더링하는
 # 순수 추가 섹션. ⚠️ 아래(5-3) 간이 DCF의 else 블록은 latest_fcf<=0이면 st.stop()으로 페이지

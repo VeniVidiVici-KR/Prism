@@ -52,17 +52,34 @@ def build_snapshot(ticker: str, info: dict) -> dict:
 
     peers.py처럼 같은 Ticker의 info를 다른 목적으로도 써야 하는 호출부가 있어,
     yf.Ticker(...).info를 중복 조회하지 않도록 조회와 가공을 분리했다.
+
+    ⚠️ 통화 불일치 라운드(2026-09) — currency("USD" 등, 거래소 시세 통화)와
+    financialCurrency(재무제표 공시 통화)는 외국 ADR(KT, PKX, TSM, BABA 등 실측 확인)에서
+    서로 다르다: 주가·시가총액·배당(dividendRate/dividends)·payoutRatio·dividendYield·
+    forwardPE는 이미 거래통화로 일관되게 오지만, .financials/.balance_sheet/.cashflow
+    원본은 환산 없이 공시 통화 그대로(예: KT는 KRW) 온다. 이 프로젝트의 PER/PBR·DCF 계산은
+    가격(거래통화)과 재무제표(공시통화)를 그대로 나누므로, 이 둘이 다르면 결과가 수십만%
+    단위로 터진다(실측: KT 정식 DCF 괴리율 +18,692,553%). financialCurrency가 없는(None)
+    종목은 비교 자체가 무의미하므로 불일치로 취급하지 않는다(정상 종목과 동일하게 통과).
+    currency_mismatch는 여기서 한 번만 계산해 하위 섹션들이 각자 다시 판정하지 않고
+    그대로 받아쓰게 한다(is_financial_industry와 같은 원칙).
     """
     name = info.get("longName") or info.get("shortName")
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     if not name or price is None:
         raise TickerNotFoundError(f"'{ticker}' 티커에 대한 데이터를 찾을 수 없습니다.")
 
+    currency = info.get("currency", "USD")
+    financial_currency = info.get("financialCurrency")
+    currency_mismatch = financial_currency is not None and financial_currency != currency
+
     return {
         "ticker": ticker.upper(),
         "name": name,
         "price": price,
-        "currency": info.get("currency", "USD"),
+        "currency": currency,
+        "financial_currency": financial_currency,
+        "currency_mismatch": currency_mismatch,
         "sector": info.get("sector", "N/A"),
         "industry": info.get("industry", "N/A"),
         "shares_outstanding": info.get("sharesOutstanding"),

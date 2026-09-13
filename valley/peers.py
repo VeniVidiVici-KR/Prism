@@ -187,6 +187,12 @@ def get_valuation_snapshot(ticker: str) -> dict:
         "name": snapshot["name"],
         "price": price,
         "currency": snapshot["currency"],
+        # ⚠️ 통화 불일치 라운드(2026-09) — per/pbr/bvps는 raw 재무제표(공시통화) ÷ 가격(거래통화)
+        # 이라 currency_mismatch면 무의미해진다(실측: KT PER=0.0056). 호출부(뷰)가 이 플래그로
+        # 표시 여부를 판단하게, 계산 자체는 그대로 반환한다(데이터 레이어는 정직하게 값을
+        # 내놓고, 게이팅은 뷰가 한다는 이 프로젝트의 기존 원칙 — is_financial_industry와 동일).
+        "currency_mismatch": snapshot.get("currency_mismatch", False),
+        "financial_currency": snapshot.get("financial_currency"),
         "market_cap": snapshot.get("market_cap"),
         "per": per,
         "pbr": pbr,
@@ -272,12 +278,22 @@ def get_historical_per_pbr(ticker: str, years: int = 5) -> pd.DataFrame:
 
 
 def build_valuation_table(rows: list[dict]) -> pd.DataFrame:
-    """get_valuation_snapshot() 결과 리스트를 화면 표시용 DataFrame으로 포맷한다."""
+    """get_valuation_snapshot() 결과 리스트를 화면 표시용 DataFrame으로 포맷한다.
+
+    ⚠️ 통화 불일치 라운드(2026-09) — PER/PBR은 raw 재무제표(공시통화)로 계산돼 currency_mismatch
+    행에서는 무의미하다(실측: KT PER=0.0056). 그 행만 PER/PBR을 "N/A"로 비운다 — Fwd PER(Yahoo
+    forwardPE, 이미 거래통화 기준이라 실측으로 정상값 확인)·배당수익률·배당성향·ROE·시가총액은
+    전부 비율이거나 이미 거래통화 기준이라 그대로 둔다(같은 표 안에서 어떤 열은 믿을 수 있고
+    어떤 열은 아닌지 명확히 구분된다).
+    """
     df = pd.DataFrame(rows)
     df["price"] = df.apply(lambda r: format_money(r["price"], r["currency"]), axis=1)
     df["market_cap"] = df.apply(
         lambda r: format_money(r["market_cap"], r["currency"]) if r["market_cap"] else "N/A", axis=1
     )
+    if "currency_mismatch" in df.columns:
+        df["per"] = df.apply(lambda r: None if r.get("currency_mismatch") else r["per"], axis=1)
+        df["pbr"] = df.apply(lambda r: None if r.get("currency_mismatch") else r["pbr"], axis=1)
     df["per"] = df["per"].map(format_multiple)
     df["forward_per"] = df["forward_per"].map(format_multiple)
     df["pbr"] = df["pbr"].map(format_multiple)
