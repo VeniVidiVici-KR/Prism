@@ -8,9 +8,7 @@
 바로잡는다 — 그 두 peer도 이 클래스의 버그였다(예전엔 PER "0.0배"로 표시돼 있었음).
 """
 
-import pandas as pd
-
-from valley.peers import build_valuation_table
+from valley.peers import _payout_ratio, build_valuation_table
 
 
 def _row(**overrides) -> dict:
@@ -73,3 +71,43 @@ def test_missing_currency_mismatch_key_defaults_to_shown():
     del row["currency_mismatch"]
     df = build_valuation_table([row])
     assert df.iloc[0]["PER"] == "30.0배"
+
+
+def test_row_missing_key_is_not_blanked_when_sharing_table_with_mismatched_row():
+    """⚠️ 핵심 회귀 — 일부 행에만 currency_mismatch 키가 있으면(코드 변경 전 캐시된 스냅샷이
+    새 스냅샷과 한 표에 섞이는 경우) pandas가 없는 행을 NaN으로 채우는데, bool(nan)이 True라
+    단순 truthy 검사로는 정상 종목까지 PER/PBR이 N/A로 비워졌다(실측 재현). `is True` 엄격
+    비교로 막는다."""
+    normal = _row(ticker="AAPL")
+    del normal["currency_mismatch"]
+    mismatched = _row(ticker="KT", currency_mismatch=True, financial_currency="KRW")
+
+    df = build_valuation_table([normal, mismatched])
+
+    assert df.iloc[0]["PER"] == "30.0배", "키가 없는 정상 행이 잘못 비워짐"
+    assert df.iloc[0]["PBR"] == "40.0배"
+    assert df.iloc[1]["PER"] == "N/A"
+    assert df.iloc[1]["PBR"] == "N/A"
+
+
+# ── 배당성향 폴백의 통화 혼합 가드 (통화 불일치 후속 라운드, 2026-10) ──────────────────
+
+
+def test_payout_ratio_prefers_yahoo_value_even_when_currency_mismatched():
+    """Yahoo info["payoutRatio"]는 거래통화 기준으로 일관되게 계산된 비율이라 통화 불일치
+    종목에서도 그대로 쓴다(실측: ADR 10종 전부 이 필드를 제공)."""
+    ratio = _payout_ratio({"payoutRatio": 0.4422}, 0.81, 476_263_616, 1.7e12, currency_mismatch=True)
+    assert ratio == 0.4422
+
+
+def test_payout_ratio_fallback_blocked_when_currency_mismatched():
+    """⚠️ 핵심 — 폴백 식(DPS×주식수÷순이익)은 DPS(거래통화)와 순이익(공시통화)을 섞어
+    환율 배수만큼 틀린다. 통화 불일치면 계산하지 않고 None을 반환해야 한다."""
+    ratio = _payout_ratio({}, 0.81, 476_263_616, 1.7e12, currency_mismatch=True)
+    assert ratio is None
+
+
+def test_payout_ratio_fallback_still_works_for_normal_ticker():
+    """⚠️ 회귀 — 통화가 일치하는 정상 종목은 폴백 동작이 예전 그대로여야 한다."""
+    ratio = _payout_ratio({}, 2.0, 1000.0, 10_000.0)
+    assert ratio == 0.2

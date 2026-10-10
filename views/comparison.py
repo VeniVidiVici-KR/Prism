@@ -132,6 +132,20 @@ elif st.button("DCF 비교 계산"):
             "현재가": format_money(price, currency),
         }
 
+        # ⚠️ 통화 불일치 후속 라운드(2026-10) — ADR 등은 FCF(raw 재무제표, 공시통화)를 주가
+        # (거래통화)와 섞어 계산하면 결과가 터진다(실측: TSM 내재가치 $3,291.50 vs 주가
+        # $453.31 → 괴리율 +626.1%, KT는 +163,394%). Stock Research의 간이 DCF와 같은 이유로
+        # 막고, 기존 "비고" 열(종목별 실패 격리용)에 사유를 적어 다른 종목 계산은 그대로
+        # 이어간다. 이 플래그는 위에서 이미 받은 valuation_row에 들어있어 추가 조회가 없다.
+        if valuation_row.get("currency_mismatch"):
+            dcf_rows.append(
+                {
+                    **base_row, "내재가치": "N/A", "괴리율": "N/A", "시장 내재 성장률": "N/A",
+                    "비고": f"주가({currency})와 재무제표({valuation_row.get('financial_currency')}) 통화 상이 — 계산 불가",
+                }
+            )
+            continue
+
         # 종목별 실패 격리: 어느 한 종목에서 FCF/발행주식수/역산 성장률 중 무엇이 없거나
         # 계산이 안 되더라도 그 칸만 N/A로 두고, 나머지 종목은 정상적으로 계산을 이어간다.
         try:

@@ -278,12 +278,63 @@ def test_screener_full_flow():
 
 
 @pytest.mark.network
+def test_screener_currency_mismatch_excluded_from_per_pbr_filter_and_sort():
+    """통화 불일치 후속 라운드(2026-10) — 표는 PER/PBR을 N/A로 비우는데 필터·정렬이 raw 값을
+    쓰면 "N/A인데 PER 1.4배짜리 초저평가 종목처럼 최상단 정렬"되는 모순이 생겼다(실측: TSM
+    raw PER=1.38, KT=0.005). 이제 불일치 종목은 '미산출 지표'로 취급돼 PER 정렬 시 뒤로
+    밀려야 하고, 배당수익률·ROE는 그대로 남아야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "screener.py"), default_timeout=120)
+    at.run()
+    at.text_area[0].input("AAPL, MSFT, TSM, KT")
+    next(b for b in at.button if b.label == "스크리닝 실행").click()
+    at.run(timeout=120)
+    assert at.exception == []
+
+    assert any("PER/PBR을 산출하지 않았습니다" in i.value for i in at.info), "통화 불일치 안내가 없음"
+
+    df = next(d.value for d in at.dataframe if "PER" in d.value.columns)
+    by_ticker = df.set_index("티커")
+    for adr in ("TSM", "KT"):
+        assert by_ticker.loc[adr, "PER"] == "N/A"
+        assert by_ticker.loc[adr, "PBR"] == "N/A"
+        assert by_ticker.loc[adr, "ROE"] != "N/A", "ROE는 비율이라 영향받지 않아야 한다"
+    assert by_ticker.loc["AAPL", "PER"] != "N/A", "정상 종목의 PER이 잘못 비워짐"
+
+    # PER 기본 정렬(오름차순)에서 미산출 종목은 맨 뒤로 가야 한다.
+    tickers = list(df["티커"])
+    assert tickers.index("AAPL") < tickers.index("TSM")
+    assert tickers.index("MSFT") < tickers.index("KT")
+
+
+@pytest.mark.network
 def test_comparison_full_flow():
     at = AppTest.from_file(str(VIEWS_DIR / "comparison.py"), default_timeout=120)
     at.run()
     next(b for b in at.button if b.label == "비교하기").click()
     at.run()
     assert at.exception == []
+
+
+@pytest.mark.network
+def test_comparison_currency_mismatch_blocks_dcf_row_only():
+    """통화 불일치 후속 라운드(2026-10) — Comparison의 DCF 비교도 FCF(공시통화)를 주가
+    (거래통화)로 나눠 실측상 TSM 괴리율 +626.1%가 아무 경고 없이 찍혔다. 이제 그 종목만
+    N/A + 사유로 막히고, 같은 표의 정상 종목(AAPL)은 그대로 계산돼야 한다."""
+    at = AppTest.from_file(str(VIEWS_DIR / "comparison.py"), default_timeout=150)
+    at.run()
+    at.text_input[0].input("AAPL, TSM")
+    next(b for b in at.button if b.label == "비교하기").click()
+    at.run(timeout=150)
+    next(b for b in at.button if b.label == "DCF 비교 계산").click()
+    at.run(timeout=150)
+    assert at.exception == []
+
+    dcf_df = next(d.value for d in at.dataframe if "괴리율" in d.value.columns)
+    by_ticker = dcf_df.set_index("티커")
+    assert by_ticker.loc["TSM", "괴리율"] == "N/A"
+    assert by_ticker.loc["TSM", "내재가치"] == "N/A"
+    assert "통화 상이" in by_ticker.loc["TSM", "비고"]
+    assert by_ticker.loc["AAPL", "내재가치"] != "N/A", "정상 종목의 DCF까지 막히면 안 된다"
 
 
 @pytest.mark.network

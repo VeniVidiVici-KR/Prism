@@ -121,16 +121,32 @@ def _dividend_yield(info: dict, dps: float | None, price: float) -> float | None
     return dps / price
 
 
-def _payout_ratio(info: dict, dps: float | None, shares_outstanding: float | None, net_income: float | None) -> float | None:
+def _payout_ratio(
+    info: dict,
+    dps: float | None,
+    shares_outstanding: float | None,
+    net_income: float | None,
+    currency_mismatch: bool = False,
+) -> float | None:
     """배당성향을 비율(0.35 = 35%)로 반환한다.
 
     info["payoutRatio"]는 실측 확인 결과 이미 비율(0.1259 = 12.59%)로 온다 — dividendYield와
     달리 스케일 보정이 필요 없다. 값이 없으면 DPS × 발행주식수(배당총액) / 순이익으로 계산한다.
     순이익이 0 이하이거나 배당(DPS)이 없으면 배당성향은 의미가 없어 None을 반환한다.
+
+    ⚠️ 통화 불일치 후속 라운드(2026-10) — 이 폴백 식은 DPS(거래통화, info/dividends 기준)와
+    순이익(공시통화, raw 재무제표)을 섞으므로 ADR 등 통화 불일치 종목에서는 환율 배수만큼
+    틀린 값이 나온다. 그런 종목은 폴백을 쓰지 않고 None(= 화면에 "N/A")을 반환한다 —
+    PER/PBR과 같은 원칙이다(틀린 숫자를 그럴듯하게 보여주지 않는다). info["payoutRatio"]
+    경로는 Yahoo가 거래통화 기준으로 일관되게 계산한 값이라 그대로 쓴다(실측: ADR 10종
+    KT/SHG/TSM/BABA/PKX/SKM/LPL/TM/SONY/ASML 전부 이 필드를 제공해 폴백에 도달하지 않는다 —
+    즉 이 가드는 드문 경우를 위한 안전망이다).
     """
     raw = info.get("payoutRatio")
     if raw is not None:
         return float(raw)
+    if currency_mismatch:
+        return None
     if not dps or not shares_outstanding or net_income is None or net_income <= 0:
         return None
     return (dps * shares_outstanding) / net_income
@@ -179,7 +195,10 @@ def get_valuation_snapshot(ticker: str) -> dict:
 
     dps = _dividend_per_share(t, info)
     dividend_yield = _dividend_yield(info, dps, price)
-    payout_ratio = _payout_ratio(info, dps, snapshot.get("shares_outstanding"), fundamentals["net_income"])
+    payout_ratio = _payout_ratio(
+        info, dps, snapshot.get("shares_outstanding"), fundamentals["net_income"],
+        currency_mismatch=snapshot.get("currency_mismatch", False),
+    )
     roe = _roe(fundamentals["net_income"], fundamentals["equity"])
 
     return {
@@ -292,8 +311,13 @@ def build_valuation_table(rows: list[dict]) -> pd.DataFrame:
         lambda r: format_money(r["market_cap"], r["currency"]) if r["market_cap"] else "N/A", axis=1
     )
     if "currency_mismatch" in df.columns:
-        df["per"] = df.apply(lambda r: None if r.get("currency_mismatch") else r["per"], axis=1)
-        df["pbr"] = df.apply(lambda r: None if r.get("currency_mismatch") else r["pbr"], axis=1)
+        # ⚠️ `is True`로 엄격 비교한다 — 일부 행에만 이 키가 있으면(예: 코드 변경 전 캐시된
+        # get_valuation_snapshot 결과가 새 결과와 한 표에 섞일 때) pandas가 나머지 행을 NaN으로
+        # 채우는데, bool(nan)은 True라 단순 truthy 검사로는 **정상 종목의 PER/PBR까지** 함께
+        # 비워진다(실측 재현: KT와 한 표에 있던 AAPL이 N/A로 표시됨).
+        mismatched = df["currency_mismatch"].apply(lambda v: v is True)
+        df.loc[mismatched, "per"] = None
+        df.loc[mismatched, "pbr"] = None
     df["per"] = df["per"].map(format_multiple)
     df["forward_per"] = df["forward_per"].map(format_multiple)
     df["pbr"] = df["pbr"].map(format_multiple)

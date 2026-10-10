@@ -68,6 +68,27 @@ if not rows:
     st.info("표시할 종목이 없습니다.")
     st.stop()
 
+# ⚠️ 통화 불일치 후속 라운드(2026-10) — PER/PBR은 raw 재무제표(공시통화)를 주가(거래통화)로
+# 나눈 값이라 ADR 등 통화 불일치 종목에서는 무의미하다. build_valuation_table은 이미 그런
+# 행의 PER/PBR을 "N/A"로 비우지만, 아래 필터·정렬·슬라이더 범위가 raw 값을 그대로 쓰면
+# "표에는 N/A인데 PER 1.4배짜리 초저평가 종목처럼 최상단에 정렬"되는 모순이 생긴다
+# (실측: TSM raw PER=1.38, KT=0.005 — 어떤 저PER 필터든 통과한다). 여기서 한 번에 None으로
+# 만들어 기존 "미산출 지표"(include_missing 체크박스가 이미 다루는 상태)와 똑같이 취급한다.
+# ⚠️ 캐시된 dict를 그대로 수정하지 않고 새 dict를 만든다(st.cache_data 반환값 변조 방지).
+# 배당수익률·배당성향·ROE·시가총액은 비율이거나 이미 거래통화 기준이라 그대로 둔다.
+mismatched_tickers = [r["ticker"] for r in rows if r.get("currency_mismatch") is True]
+rows = [
+    {**r, "per": None, "pbr": None} if r.get("currency_mismatch") is True else r
+    for r in rows
+]
+if mismatched_tickers:
+    st.info(
+        f"{len(mismatched_tickers)}개 종목은 주가 통화와 재무제표 통화가 달라(ADR 등) "
+        f"PER/PBR을 산출하지 않았습니다 — {', '.join(mismatched_tickers)}. "
+        "필터·정렬에서도 '미산출'로 취급되며, 배당수익률·배당성향·ROE·시가총액은 영향받지 "
+        "않아 그대로 쓸 수 있습니다. 한국 기업의 ADR인 경우 6자리 원주 코드로 조회하세요."
+    )
+
 st.subheader("필터")
 per_values = [r["per"] for r in rows if r["per"] is not None]
 pbr_values = [r["pbr"] for r in rows if r["pbr"] is not None]
