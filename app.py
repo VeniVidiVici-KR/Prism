@@ -8,6 +8,7 @@ stock_research = st.Page("views/stock_research.py", title="Stock Research", icon
 screener = st.Page("views/screener.py", title="Screener", icon="🔍")
 comparison = st.Page("views/comparison.py", title="Comparison", icon="⚖️")
 macro_indicator = st.Page("views/macro_indicator.py", title="Macro Indicator", icon="🌐")
+data_health = st.Page("views/data_health.py", title="Data Health", icon="🩺")
 
-pg = st.navigation([stock_research, screener, comparison, macro_indicator])
+pg = st.navigation([stock_research, screener, comparison, macro_indicator, data_health])
 pg.run()

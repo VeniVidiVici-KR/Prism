@@ -66,6 +66,17 @@ def test_macro_indicator_initial_entry_no_click():
     assert at.exception == []
 
 
+def test_data_health_initial_entry_no_click():
+    """⚠️ 건강검진 라운드(2026-10) — 이 페이지는 105개 시리즈를 전수 조회하므로(실측 25~47초)
+    진입만으로 자동 실행되면 절대 안 된다. 버튼을 누르기 전에는 안내만 뜨고 네트워크를 타지
+    않아야 한다."""
+    with patch("valley.macro.get_indicator_series") as mock_fetch:
+        at = _load("data_health.py")
+    assert at.exception == []
+    assert mock_fetch.call_count == 0, "버튼을 누르지 않았는데 조회가 나갔다"
+    assert any("전체 점검 실행" in b.label for b in at.button)
+
+
 def test_macro_indicator_country_switch_no_click():
     """국가 라디오 전환은 버튼 클릭이 아니라 즉시 반영되는 조작이라 기본 티어에 포함한다
     (카탈로그 딕셔너리 조회만 있고 네트워크 조회는 없다)."""
@@ -88,7 +99,9 @@ def test_pages_do_not_crash_when_env_keys_missing(monkeypatch):
     with patch("dotenv.load_dotenv", return_value=True), \
          patch("valley.market_snapshot.get_market_snapshot", return_value=[]), \
          patch("valley.market_snapshot.get_us_market_state", return_value=None):
-        for page in ("stock_research.py", "screener.py", "comparison.py", "macro_indicator.py"):
+        for page in (
+            "stock_research.py", "screener.py", "comparison.py", "macro_indicator.py", "data_health.py",
+        ):
             at = _load(page)
             assert at.exception == [], f"{page}가 키 없는 환경에서 예외를 던짐"
 
@@ -335,6 +348,33 @@ def test_comparison_currency_mismatch_blocks_dcf_row_only():
     assert by_ticker.loc["TSM", "내재가치"] == "N/A"
     assert "통화 상이" in by_ticker.loc["TSM", "비고"]
     assert by_ticker.loc["AAPL", "내재가치"] != "N/A", "정상 종목의 DCF까지 막히면 안 된다"
+
+
+@pytest.mark.network
+def test_data_health_full_scan():
+    """건강검진 라운드(2026-10) — 카탈로그 전 시리즈를 실제로 조회해 점검 표를 만든다
+    (실측 25~47초). 어느 한 시리즈가 깨져도 스캔 전체가 멈추면 안 되고(개별 항목 격리),
+    모든 카탈로그 항목이 빠짐없이 결과에 들어와야 한다."""
+    from valley.macro import INDICATORS
+
+    catalog_size = sum(len(items) for cats in INDICATORS.values() for items in cats.values())
+
+    at = AppTest.from_file(str(VIEWS_DIR / "data_health.py"), default_timeout=600)
+    at.run()
+    next(b for b in at.button if b.label == "전체 점검 실행").click()
+    at.run(timeout=600)
+    assert at.exception == []
+
+    df = next(d.value for d in at.dataframe if "상태" in d.value.columns)
+    # 기본값이 "문제 항목만 보기"라 표에는 일부만 보이지만, 요약 지표 합계는 전수와 같아야 한다.
+    statuses = [m for m in at.metric if m.label in ("정상", "지연", "폴백", "키 없음", "조회 실패")]
+    assert sum(int(m.value) for m in statuses) == catalog_size, "일부 시리즈가 점검에서 누락됨"
+
+    assert set(df["상태"]) <= {"정상", "지연", "폴백", "키 없음", "조회 실패"}
+    # 주기 자동 추론이 동작하는지 — 조회에 성공한 행은 주기가 "알 수 없음"이면 안 된다.
+    fetched = df[df["최신 관측"] != "—"]
+    if not fetched.empty:
+        assert "알 수 없음" not in set(fetched["주기"])
 
 
 @pytest.mark.network

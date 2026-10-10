@@ -25,6 +25,9 @@ PAGE_FILES = {
     "screener": VIEWS_DIR / "screener.py",
     "comparison": VIEWS_DIR / "comparison.py",
     "macro_indicator": [VIEWS_DIR / "macro_indicator.py", *sorted((VIEWS_DIR / "macro").glob("*.py"))],
+    # 건강검진 라운드(2026-10) — 새 페이지도 키 충돌 검사 대상에 포함한다(빠뜨리면 이 테스트가
+    # 조용히 약해진다 — 파일 분할 라운드에서 섹션 모듈을 빠뜨렸던 것과 같은 함정).
+    "data_health": VIEWS_DIR / "data_health.py",
 }
 
 # st.session_state의 dict-like 메서드 — 키 이름이 아니라 메서드 호출이므로 제외한다.
@@ -101,6 +104,7 @@ def test_known_page_prefixes_cover_most_persistent_keys():
         "screener": "screener_",
         "comparison": "cmp_",
         "macro_indicator": "macro_",
+        "data_health": "health_",
     }
     for name, path in PAGE_FILES.items():
         keys = _extract_session_keys(path)
